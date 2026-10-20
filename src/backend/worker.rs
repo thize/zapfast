@@ -785,6 +785,7 @@ pub async fn run(
         late_older: VecDeque::new(),
         older_ids_match: false,
         interactive_sending: HashMap::new(),
+        awaiting_ack: HashMap::new(),
         receipts_watch: None,
         receipts_pruned: Instant::now(),
         early: Default::default(),
@@ -1080,6 +1081,9 @@ struct Worker {
     poll_history: poll_history::Requests,
     poll_sending: HashSet<(ChatId, String)>,
     interactive_sending: HashMap<(ChatId, String), String>,
+    /// Messages we sent that WhatsApp has not acknowledged yet, by id, with
+    /// their chat: the first ack's server time replaces their local stamp.
+    awaiting_ack: HashMap<String, ChatId>,
     /// The group message whose "Message info" is open.
     receipts_watch: Option<(ChatId, String)>,
     /// When receipts that never found their message were last dropped.
@@ -1846,6 +1850,25 @@ impl Worker {
         if let Ok(Some(mut message)) = self.archive.message(chat, id) {
             self.polish(&mut message);
             self.emit(Event::MessageUpdated(Box::new(message)));
+        }
+    }
+
+    /// Moves a message we sent to the time WhatsApp's server acknowledged it.
+    /// Only the first ack counts: a resend after a retry receipt is acked
+    /// again, later, and must not move the message down the chat.
+    fn server_ack(&mut self, ack: &wa_events::ServerAck) {
+        if ack.class.as_deref() != Some("message") {
+            return;
+        }
+        let Some(chat) = self.awaiting_ack.remove(&ack.id) else {
+            return;
+        };
+        let Some(at) = ack.timestamp.filter(|_| ack.error.is_none()) else {
+            return;
+        };
+        if let Ok(true) = self.archive.restamp_sent(&chat, &ack.id, at.timestamp()) {
+            self.emit_message(&chat, &ack.id);
+            self.emit_chat(&chat);
         }
     }
 
@@ -3605,6 +3628,7 @@ impl Worker {
                 self.push_name_synced();
             }
             E::OfflineSyncCompleted(_) => self.emit_chats(),
+            E::ServerAck(ack) => self.server_ack(ack),
             _ => {}
         }
     }
@@ -4808,6 +4832,10 @@ impl Worker {
         if let Some(existing) = &existing {
             message.content.keep_local_paths(&existing.content);
             keep_live_location_notice(&mut message.content, existing);
+        }
+        if message.from_me && message.status == Delivery::Pending {
+            self.awaiting_ack
+                .insert(message.id.clone(), message.chat.clone());
         }
         if let Err(error) = self.archive.insert_message(&message, raw.as_deref()) {
             log::warn!("could not store a message: {error}");
@@ -7529,6 +7557,10 @@ impl Worker {
                     Some(_) => Delivery::Failed,
                     None => Delivery::Sent,
                 };
+                if error.is_some() {
+                    // A failed send is never acked; a retry stores the row again.
+                    self.awaiting_ack.remove(&id);
+                }
                 let _ = self
                     .archive
                     .set_status(&chat, &id, status, crate::util::now());
@@ -16782,6 +16814,7 @@ mod receipt_tests {
             late_older: VecDeque::new(),
             older_ids_match: false,
             interactive_sending: HashMap::new(),
+            awaiting_ack: HashMap::new(),
             receipts_watch: None,
             receipts_pruned: Instant::now(),
             early: Default::default(),
@@ -19520,6 +19553,46 @@ mod receipt_tests {
         worker.apply_history(chunk, true);
         assert!(marked(&worker));
         assert_eq!(unread(&worker), 0);
+    }
+
+    #[test]
+    fn the_first_server_ack_restamps_our_message() {
+        let (mut worker, _events, _inbox, _wa) = worker();
+        // Our clock is ahead: the message was stamped 200 before the server answered.
+        worker.store_message(
+            Message {
+                status: Delivery::Pending,
+                ..own_message("mine", 200)
+            },
+            None,
+            None,
+        );
+        let ack = |id: &str, class: &str, at: i64| {
+            wa_events::ServerAck::builder()
+                .id(id.to_owned())
+                .class(class.to_owned())
+                .timestamp(whatsapp_rust::wacore::time::from_secs(at).unwrap())
+                .build()
+        };
+        let stamp = |worker: &Worker, id: &str| {
+            worker.archive.message(PEER, id).unwrap().unwrap().timestamp
+        };
+        worker.server_ack(&ack("mine", "message", 140));
+        assert_eq!(stamp(&worker, "mine"), 140);
+        // A resend is acked again, later; the first ack already placed it.
+        worker.server_ack(&ack("mine", "message", 500));
+        assert_eq!(stamp(&worker, "mine"), 140);
+        // An ack for another kind of stanza never moves a message.
+        worker.store_message(
+            Message {
+                status: Delivery::Pending,
+                ..own_message("other", 300)
+            },
+            None,
+            None,
+        );
+        worker.server_ack(&ack("other", "receipt", 90));
+        assert_eq!(stamp(&worker, "other"), 300);
     }
 
     #[test]
