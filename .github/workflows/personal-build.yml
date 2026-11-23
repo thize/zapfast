@@ -1,0 +1,148 @@
+# Builds ZapFast's latest release plus the open pull requests of the
+# authors below, and publishes it as a release of this fork. It runs on a
+# schedule and does nothing when neither the upstream release nor any of
+# those pull requests changed since the last build.
+name: Personal build
+
+on:
+  schedule:
+    - cron: "23 */4 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Build even if nothing changed
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: personal-build
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: crmne/zapfast
+  AUTHORS: thize guibg
+  ASSET: ZapFast-macos-arm64.zip
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      # Keep the fork's main equal to upstream. GITHUB_TOKEN cannot push
+      # commits that touch workflow files, so this needs SYNC_TOKEN (a token
+      # with the workflow scope) whenever upstream changes one of them.
+      - name: Sync fork main with upstream
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
+        run: gh api -X POST "repos/$GITHUB_REPOSITORY/merge-upstream" -f branch=main
+
+      - name: Decide what to build
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          upstream_tag=$(gh release view -R "$UPSTREAM" --json tagName -q .tagName)
+          : > prs.tsv
+          for author in $AUTHORS; do
+            gh pr list -R "$UPSTREAM" --state open --author "$author" --limit 100 \
+              --json number,headRefOid,title,author \
+              --jq '.[] | [.number, .headRefOid, .author.login, .title] | @tsv' >> prs.tsv
+          done
+          sort -n -o prs.tsv prs.tsv
+          fingerprint=$( { echo "$upstream_tag"; cut -f1,2 prs.tsv; } | shasum -a 256 | cut -c1-10)
+          tag="personal-${upstream_tag}-${fingerprint}"
+          echo "upstream_tag=$upstream_tag" >> "$GITHUB_OUTPUT"
+          echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+             && [ "${{ inputs.force }}" != "true" ]; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "Nothing changed since $tag." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+          cat prs.tsv
+
+      - name: Check out upstream release
+        if: steps.plan.outputs.build == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM }}
+          ref: ${{ steps.plan.outputs.upstream_tag }}
+          fetch-depth: 0
+          path: zapfast
+
+      - name: Merge the open pull requests
+        if: steps.plan.outputs.build == 'true'
+        working-directory: zapfast
+        run: |
+          set -euo pipefail
+          git config user.name "personal-build"
+          git config user.email "personal-build@users.noreply.github.com"
+          {
+            echo "ZapFast ${{ steps.plan.outputs.upstream_tag }} with these open pull requests from $UPSTREAM:"
+            echo
+          } > ../notes.md
+          skipped=""
+          while IFS=$'\t' read -r number sha author title; do
+            [ -n "$number" ] || continue
+            git fetch -q origin "pull/$number/head:pr-$number"
+            if git merge -q --no-edit "pr-$number"; then
+              echo "- #$number $title (@$author)" >> ../notes.md
+            else
+              git merge --abort
+              skipped="$skipped\n- #$number $title (@$author)"
+            fi
+          done < ../prs.tsv
+          if [ -n "$skipped" ]; then
+            printf '\nLeft out because they conflict with this release:\n%b\n' "$skipped" >> ../notes.md
+          fi
+          cat ../notes.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Rust cache
+        if: steps.plan.outputs.build == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: zapfast
+
+      - name: Build
+        if: steps.plan.outputs.build == 'true'
+        working-directory: zapfast
+        run: cargo build --locked --release
+
+      - name: App bundle
+        if: steps.plan.outputs.build == 'true'
+        working-directory: zapfast
+        run: |
+          set -euo pipefail
+          tag="${{ steps.plan.outputs.upstream_tag }}"
+          bash packaging/macos/bundle.sh target/release/zapfast dist/ZapFast.app "${tag#v}"
+          # The marker tells the Mac's updater which build is installed.
+          echo "${{ steps.plan.outputs.tag }}" > dist/ZapFast.app/Contents/Resources/personal-build.txt
+          codesign --force --entitlements packaging/macos/entitlements.plist --sign - dist/ZapFast.app
+          codesign --verify --strict dist/ZapFast.app
+          ditto -c -k --keepParent dist/ZapFast.app "../$ASSET"
+          echo "${{ steps.plan.outputs.tag }}" > ../fingerprint.txt
+
+      - name: Publish release
+        if: steps.plan.outputs.build == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ steps.plan.outputs.tag }}"
+          gh release delete "$tag" -R "$GITHUB_REPOSITORY" --cleanup-tag -y 2>/dev/null || true
+          gh release create "$tag" "$ASSET" fingerprint.txt -R "$GITHUB_REPOSITORY" \
+            --target personal --latest \
+            --title "ZapFast ${{ steps.plan.outputs.upstream_tag }} + PRs (${{ steps.plan.outputs.fingerprint }})" \
+            --notes-file notes.md
+          # Keep the three newest personal builds.
+          gh release list -R "$GITHUB_REPOSITORY" --limit 100 --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | startswith("personal-"))] | sort_by(.createdAt) | reverse | .[3:] | .[].tagName' |
+            while read -r old; do
+              gh release delete "$old" -R "$GITHUB_REPOSITORY" --cleanup-tag -y
+            done
