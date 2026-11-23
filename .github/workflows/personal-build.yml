@@ -1,7 +1,7 @@
 # Builds ZapFast's latest release plus the open pull requests of the
-# authors below, and publishes it as a release of this fork. It runs on a
-# schedule and does nothing when neither the upstream release nor any of
-# those pull requests changed since the last build.
+# authors below, and publishes it as a signed release of this fork, which
+# the app's own updater offers. It runs on a schedule and does nothing when
+# neither the upstream release nor any of those pull requests changed.
 name: Personal build
 
 on:
@@ -24,7 +24,6 @@ concurrency:
 env:
   UPSTREAM: crmne/zapfast
   AUTHORS: thize guibg
-  ASSET: ZapFast-macos-arm64.zip
 
 jobs:
   build:
@@ -53,19 +52,25 @@ jobs:
               --jq '.[] | [.number, .headRefOid, .author.login, .title] | @tsv' >> prs.tsv
           done
           sort -n -o prs.tsv prs.tsv
-          fingerprint=$( { echo "$upstream_tag"; cut -f1,2 prs.tsv; } | shasum -a 256 | cut -c1-10)
-          tag="personal-${upstream_tag}-${fingerprint}"
+          fingerprint=$( { echo "$upstream_tag"; cut -f1,2 prs.tsv; } | shasum -a 256 | cut -c1-12)
+          version="${upstream_tag#v}-personal.${GITHUB_RUN_NUMBER}"
           echo "upstream_tag=$upstream_tag" >> "$GITHUB_OUTPUT"
           echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          if gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-             && [ "${{ inputs.force }}" != "true" ]; then
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          last=$(gh release view -R "$GITHUB_REPOSITORY" --json body -q .body 2>/dev/null || true)
+          if grep -q "fingerprint: $fingerprint" <<<"$last" && [ "${{ inputs.force }}" != "true" ]; then
             echo "build=false" >> "$GITHUB_OUTPUT"
-            echo "Nothing changed since $tag." >> "$GITHUB_STEP_SUMMARY"
+            echo "Nothing changed since the last build ($fingerprint)." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "build=true" >> "$GITHUB_OUTPUT"
           fi
           cat prs.tsv
+
+      - name: Check out this branch
+        if: steps.plan.outputs.build == 'true'
+        uses: actions/checkout@v4
+        with:
+          path: personal
 
       - name: Check out upstream release
         if: steps.plan.outputs.build == 'true'
@@ -101,7 +106,13 @@ jobs:
           if [ -n "$skipped" ]; then
             printf '\nLeft out because they conflict with this release:\n%b\n' "$skipped" >> ../notes.md
           fi
+          printf '\n<!-- fingerprint: %s -->\n' "${{ steps.plan.outputs.fingerprint }}" >> ../notes.md
           cat ../notes.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Point the updater at this fork
+        if: steps.plan.outputs.build == 'true'
+        working-directory: zapfast
+        run: bash ../personal/patch-updater.sh "${{ steps.plan.outputs.version }}" ../personal/update-public-key.hex
 
       - name: Rust cache
         if: steps.plan.outputs.build == 'true'
@@ -114,19 +125,33 @@ jobs:
         working-directory: zapfast
         run: cargo build --locked --release
 
-      - name: App bundle
+      - name: Disk image
         if: steps.plan.outputs.build == 'true'
         working-directory: zapfast
         run: |
           set -euo pipefail
-          tag="${{ steps.plan.outputs.upstream_tag }}"
-          bash packaging/macos/bundle.sh target/release/zapfast dist/ZapFast.app "${tag#v}"
-          # The marker tells the Mac's updater which build is installed.
-          echo "${{ steps.plan.outputs.tag }}" > dist/ZapFast.app/Contents/Resources/personal-build.txt
-          codesign --force --entitlements packaging/macos/entitlements.plist --sign - dist/ZapFast.app
-          codesign --verify --strict dist/ZapFast.app
-          ditto -c -k --keepParent dist/ZapFast.app "../$ASSET"
-          echo "${{ steps.plan.outputs.tag }}" > ../fingerprint.txt
+          version="${{ steps.plan.outputs.version }}"
+          test "$(target/release/zapfast --version)" = "zapfast $version"
+          bash packaging/macos/bundle.sh target/release/zapfast dmg-root/ZapFast.app "$version"
+          ln -s /Applications dmg-root/Applications
+          mkdir -p ../dist
+          hdiutil create -volname ZapFast -srcfolder dmg-root -fs HFS+ -format UDZO \
+            -o "../dist/zapfast-v$version-macos-arm64.dmg"
+
+      - uses: ruby/setup-ruby@v1
+        if: steps.plan.outputs.build == 'true'
+        with:
+          ruby-version: "4.0"
+
+      - name: Sign update manifest
+        if: steps.plan.outputs.build == 'true'
+        uses: crmne/native-packages/.github/actions/sign-release@25a4214d2f203357c84b069f39de7c17c0be6253 # v0.11.0
+        with:
+          directory: dist
+          public-key: personal/update-public-key.hex
+          key-env: UPDATE_SIGNING_KEY
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
 
       - name: Publish release
         if: steps.plan.outputs.build == 'true'
@@ -134,15 +159,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag="${{ steps.plan.outputs.tag }}"
-          gh release delete "$tag" -R "$GITHUB_REPOSITORY" --cleanup-tag -y 2>/dev/null || true
-          gh release create "$tag" "$ASSET" fingerprint.txt -R "$GITHUB_REPOSITORY" \
+          version="${{ steps.plan.outputs.version }}"
+          gh release create "v$version" dist/* -R "$GITHUB_REPOSITORY" \
             --target personal --latest \
-            --title "ZapFast ${{ steps.plan.outputs.upstream_tag }} + PRs (${{ steps.plan.outputs.fingerprint }})" \
+            --title "ZapFast $version (${{ steps.plan.outputs.upstream_tag }} + PRs)" \
             --notes-file notes.md
-          # Keep the three newest personal builds.
+          # Keep the five newest personal builds.
           gh release list -R "$GITHUB_REPOSITORY" --limit 100 --json tagName,createdAt \
-            --jq '[.[] | select(.tagName | startswith("personal-"))] | sort_by(.createdAt) | reverse | .[3:] | .[].tagName' |
+            --jq '[.[] | select(.tagName | test("-personal\\."))] | sort_by(.createdAt) | reverse | .[5:] | .[].tagName' |
             while read -r old; do
               gh release delete "$old" -R "$GITHUB_REPOSITORY" --cleanup-tag -y
             done
