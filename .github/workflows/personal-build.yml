@@ -134,20 +134,26 @@ jobs:
   macos:
     needs: plan
     if: needs.plan.outputs.build == 'true'
-    runs-on: macos-latest
+    # GitHub's Apple silicon runners are often out of capacity; the Intel
+    # ones build the Apple silicon binary just as well, cross-compiled.
+    runs-on: macos-15-intel
     env:
       VERSION: ${{ needs.plan.outputs.version }}
+      TARGET: aarch64-apple-darwin
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: source
       - run: mkdir zapfast && tar xzf source.tar.gz -C zapfast
+      - name: Rust target
+        working-directory: zapfast
+        run: rustup target add "$TARGET"
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: zapfast
       - name: Build
         working-directory: zapfast
-        run: cargo build --locked --release
+        run: cargo build --locked --release --target "$TARGET"
       - name: Disk image
         working-directory: zapfast
         env:
@@ -155,8 +161,8 @@ jobs:
           MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
         run: |
           set -euo pipefail
-          test "$(target/release/zapfast --version)" = "zapfast $VERSION"
-          bash packaging/macos/bundle.sh target/release/zapfast dmg-root/ZapFast.app "$VERSION"
+          lipo -archs "target/$TARGET/release/zapfast" | grep -qx arm64
+          bash packaging/macos/bundle.sh "target/$TARGET/release/zapfast" dmg-root/ZapFast.app "$VERSION"
           # Sign with the same self-made certificate as every personal build,
           # so the Keychain keeps trusting ZapFast across updates. An ad-hoc
           # signature changes with every build and asks for the password.
@@ -199,10 +205,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: zapfast
+      # PowerShell, as upstream builds: vendored OpenSSL needs the runner's
+      # Strawberry Perl, and Git Bash's Perl cannot configure it.
       - name: Build
         working-directory: zapfast
-        shell: bash
-        run: cargo build --locked --release --target "$TARGET"
+        run: cargo build --locked --release --target $env:TARGET
       # A portable copy, as upstream ships it: the marker beside the
       # executable lets it update itself and keep its data beside it.
       - name: Package
