@@ -7,7 +7,7 @@ mirrors [crmne/zapfast](https://github.com/crmne/zapfast).
 latest upstream release or an open pull request by the listed authors
 changes, it merges those pull requests onto the release, points the app's
 updater at this fork (`patch-updater.sh`), builds the macOS app (Apple
-silicon, ad-hoc signed) and publishes it as a release of this fork, signed
+silicon, disk image) and a portable Windows copy (x64 zip), and publishes it as a release of this fork, signed
 with this fork's update key. Pull requests that conflict are left out and
 named in the notes. Run it by hand from the Actions tab ("Run workflow",
 optionally forced).
