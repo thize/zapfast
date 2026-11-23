@@ -128,11 +128,30 @@ jobs:
       - name: Disk image
         if: steps.plan.outputs.build == 'true'
         working-directory: zapfast
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
         run: |
           set -euo pipefail
           version="${{ steps.plan.outputs.version }}"
           test "$(target/release/zapfast --version)" = "zapfast $version"
           bash packaging/macos/bundle.sh target/release/zapfast dmg-root/ZapFast.app "$version"
+          # Sign with the same self-made certificate as every personal build,
+          # so the Keychain keeps trusting ZapFast across updates. An ad-hoc
+          # signature changes with every build and asks for the password.
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          security create-keychain -p ci "$keychain"
+          security set-keychain-settings "$keychain"
+          security unlock-keychain -p ci "$keychain"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          codesign --force --keychain "$keychain" --entitlements packaging/macos/entitlements.plist \
+            --sign "ZapFast Assinatura" dmg-root/ZapFast.app
+          codesign --verify --strict dmg-root/ZapFast.app
+          codesign -dr - dmg-root/ZapFast.app
           ln -s /Applications dmg-root/Applications
           mkdir -p ../dist
           hdiutil create -volname ZapFast -srcfolder dmg-root -fs HFS+ -format UDZO \

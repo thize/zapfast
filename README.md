@@ -20,6 +20,10 @@ the newest release's disk image and drag ZapFast to Applications.
 - `update-public-key.hex` is the key personal builds trust. Its private half
   is the `UPDATE_SIGNING_KEY` secret, backed up outside GitHub. Losing it
   means the next build must be installed by hand.
+- The app is signed with the self-made "ZapFast Assinatura" certificate
+  (secrets `MACOS_CERT_P12`, base64, and `MACOS_CERT_PASSWORD`), so the
+  Keychain keeps trusting it across updates instead of asking for the
+  password after each one.
 - Edit `AUTHORS` in the workflow to change whose pull requests are included.
 - Add a `SYNC_TOKEN` secret (a token with the `workflow` scope) if keeping
   the fork's `main` in sync fails because upstream changed a workflow file.
