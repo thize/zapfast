@@ -14,8 +14,10 @@ optionally forced).
 
 A personal build is versioned `<upstream>-personal.<run>`, and its updater
 reads this fork's releases only, so the app offers each new personal build
-itself, as it would an official release. The first install is by hand: open
-the newest release's disk image and drag ZapFast to Applications.
+itself, as it would an official release. The first install is by hand: on
+macOS open the newest disk image and drag ZapFast to Applications; on
+Windows unzip the zip where ZapFast should live and run `zapfast.exe` (its
+first start copies the existing account data beside it).
 
 - `update-public-key.hex` is the key personal builds trust. Its private half
   is the `UPDATE_SIGNING_KEY` secret, backed up outside GitHub. Losing it

@@ -1,7 +1,8 @@
 # Builds ZapFast's latest release plus the open pull requests of the
-# authors below, and publishes it as a signed release of this fork, which
-# the app's own updater offers. It runs on a schedule and does nothing when
-# neither the upstream release nor any of those pull requests changed.
+# authors below for macOS and Windows, and publishes it as a signed release
+# of this fork, which the app's own updater offers. It runs on a schedule
+# and does nothing when neither the upstream release nor any of those pull
+# requests changed since the last complete build.
 name: Personal build
 
 on:
@@ -26,8 +27,13 @@ env:
   AUTHORS: thize guibg
 
 jobs:
-  build:
-    runs-on: macos-latest
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      version: ${{ steps.plan.outputs.version }}
+      upstream_tag: ${{ steps.plan.outputs.upstream_tag }}
+      fingerprint: ${{ steps.plan.outputs.fingerprint }}
     steps:
       # Keep the fork's main equal to upstream. GITHUB_TOKEN cannot push
       # commits that touch workflow files, so this needs SYNC_TOKEN (a token
@@ -52,7 +58,7 @@ jobs:
               --jq '.[] | [.number, .headRefOid, .author.login, .title] | @tsv' >> prs.tsv
           done
           sort -n -o prs.tsv prs.tsv
-          fingerprint=$( { echo "$upstream_tag"; cut -f1,2 prs.tsv; } | shasum -a 256 | cut -c1-12)
+          fingerprint=$( { echo "$upstream_tag"; cut -f1,2 prs.tsv; } | sha256sum | cut -c1-12)
           version="${upstream_tag#v}-personal.${GITHUB_RUN_NUMBER}"
           echo "upstream_tag=$upstream_tag" >> "$GITHUB_OUTPUT"
           echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
@@ -106,36 +112,51 @@ jobs:
           if [ -n "$skipped" ]; then
             printf '\nLeft out because they conflict with this release:\n%b\n' "$skipped" >> ../notes.md
           fi
-          printf '\n<!-- fingerprint: %s -->\n' "${{ steps.plan.outputs.fingerprint }}" >> ../notes.md
           cat ../notes.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Point the updater at this fork
         if: steps.plan.outputs.build == 'true'
         working-directory: zapfast
-        run: bash ../personal/patch-updater.sh "${{ steps.plan.outputs.version }}" ../personal/update-public-key.hex
+        run: |
+          bash ../personal/patch-updater.sh "${{ steps.plan.outputs.version }}" ../personal/update-public-key.hex
+          git commit -qam "Personal build ${{ steps.plan.outputs.version }}"
+          git archive --format=tar.gz -o ../source.tar.gz HEAD
 
-      - name: Rust cache
+      - uses: actions/upload-artifact@v4
         if: steps.plan.outputs.build == 'true'
-        uses: Swatinem/rust-cache@v2
+        with:
+          name: source
+          path: |
+            source.tar.gz
+            notes.md
+          retention-days: 3
+
+  macos:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: source
+      - run: mkdir zapfast && tar xzf source.tar.gz -C zapfast
+      - uses: Swatinem/rust-cache@v2
         with:
           workspaces: zapfast
-
       - name: Build
-        if: steps.plan.outputs.build == 'true'
         working-directory: zapfast
         run: cargo build --locked --release
-
       - name: Disk image
-        if: steps.plan.outputs.build == 'true'
         working-directory: zapfast
         env:
           MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
           MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
         run: |
           set -euo pipefail
-          version="${{ steps.plan.outputs.version }}"
-          test "$(target/release/zapfast --version)" = "zapfast $version"
-          bash packaging/macos/bundle.sh target/release/zapfast dmg-root/ZapFast.app "$version"
+          test "$(target/release/zapfast --version)" = "zapfast $VERSION"
+          bash packaging/macos/bundle.sh target/release/zapfast dmg-root/ZapFast.app "$VERSION"
           # Sign with the same self-made certificate as every personal build,
           # so the Keychain keeps trusting ZapFast across updates. An ad-hoc
           # signature changes with every build and asks for the password.
@@ -155,15 +176,83 @@ jobs:
           ln -s /Applications dmg-root/Applications
           mkdir -p ../dist
           hdiutil create -volname ZapFast -srcfolder dmg-root -fs HFS+ -format UDZO \
-            -o "../dist/zapfast-v$version-macos-arm64.dmg"
+            -o "../dist/zapfast-v$VERSION-macos-arm64.dmg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*.dmg
+          if-no-files-found: error
 
+  windows:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      TARGET: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: source
+      - shell: bash
+        run: mkdir zapfast && tar xzf source.tar.gz -C zapfast
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: zapfast
+      - name: Build
+        working-directory: zapfast
+        shell: bash
+        run: cargo build --locked --release --target "$TARGET"
+      # A portable copy, as upstream ships it: the marker beside the
+      # executable lets it update itself and keep its data beside it.
+      - name: Package
+        working-directory: zapfast
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(target/$TARGET/release/zapfast.exe --version | tr -d '\r')" = "zapfast $VERSION"
+          name="zapfast-v$VERSION-$TARGET"
+          mkdir -p "../dist/$name"
+          cp "target/$TARGET/release/zapfast.exe" README.md LICENSE THIRD-PARTY-NOTICES.md \
+            packaging/zapfast-portable.txt "../dist/$name/"
+          cd ../dist
+          7z a "$name.zip" "$name" >/dev/null
+          rm -rf "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*.zip
+          if-no-files-found: error
+
+  publish:
+    needs: [plan, macos, windows]
+    if: >-
+      always() && needs.plan.outputs.build == 'true' &&
+      (needs.macos.result == 'success' || needs.windows.result == 'success')
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: personal
+      - uses: actions/download-artifact@v4
+        with:
+          name: source
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: macos
+          path: dist
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: windows
+          path: dist
       - uses: ruby/setup-ruby@v1
-        if: steps.plan.outputs.build == 'true'
         with:
           ruby-version: "4.0"
-
       - name: Sign update manifest
-        if: steps.plan.outputs.build == 'true'
         uses: crmne/native-packages/.github/actions/sign-release@25a4214d2f203357c84b069f39de7c17c0be6253 # v0.11.0
         with:
           directory: dist
@@ -171,17 +260,22 @@ jobs:
           key-env: UPDATE_SIGNING_KEY
         env:
           UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
-
       - name: Publish release
-        if: steps.plan.outputs.build == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          version="${{ steps.plan.outputs.version }}"
-          gh release create "v$version" dist/* -R "$GITHUB_REPOSITORY" \
+          # Only a build with both platforms counts as done; a partial one
+          # is built again at the next scheduled run.
+          if [ "${{ needs.macos.result }}" = success ] && [ "${{ needs.windows.result }}" = success ]; then
+            printf '\n<!-- fingerprint: %s -->\n' "${{ needs.plan.outputs.fingerprint }}" >> notes.md
+          else
+            printf '\nOnly part of this build finished (macOS: %s, Windows: %s).\n' \
+              "${{ needs.macos.result }}" "${{ needs.windows.result }}" >> notes.md
+          fi
+          gh release create "v$VERSION" dist/* -R "$GITHUB_REPOSITORY" \
             --target personal --latest \
-            --title "ZapFast $version (${{ steps.plan.outputs.upstream_tag }} + PRs)" \
+            --title "ZapFast $VERSION (${{ needs.plan.outputs.upstream_tag }} + PRs)" \
             --notes-file notes.md
           # Keep the five newest personal builds.
           gh release list -R "$GITHUB_REPOSITORY" --limit 100 --json tagName,createdAt \
