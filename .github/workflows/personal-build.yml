@@ -1,8 +1,10 @@
 # Builds ZapFast's latest release plus the open pull requests of the
-# authors below for macOS and Windows, and publishes it as a signed release
-# of this fork, which the app's own updater offers. It runs on a schedule
-# and does nothing when neither the upstream release nor any of those pull
-# requests changed since the last complete build.
+# authors below, with the same downloads as an upstream release (macOS
+# universal disk image; Windows x64 and arm64 zip and installer; Linux x64
+# and arm64 archive, AppImage, deb and rpm; Flatpak), and publishes it as a
+# signed release of this fork, which the app's own updater offers. It runs
+# on a schedule and does nothing when neither the upstream release nor any
+# of those pull requests changed since the last complete build.
 name: Personal build
 
 on:
@@ -25,6 +27,7 @@ concurrency:
 env:
   UPSTREAM: crmne/zapfast
   AUTHORS: thize guibg
+  CARGO_TERM_COLOR: always
 
 jobs:
   plan:
@@ -114,7 +117,7 @@ jobs:
           fi
           cat ../notes.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Point the updater at this fork
+      - name: Point the updater and the packages at this fork
         if: steps.plan.outputs.build == 'true'
         working-directory: zapfast
         run: |
@@ -135,34 +138,48 @@ jobs:
     needs: plan
     if: needs.plan.outputs.build == 'true'
     # GitHub's Apple silicon runners are often out of capacity; the Intel
-    # ones build the Apple silicon binary just as well, cross-compiled.
+    # ones build both halves of the universal binary just as well.
     runs-on: macos-15-intel
     env:
       VERSION: ${{ needs.plan.outputs.version }}
-      TARGET: aarch64-apple-darwin
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: source
       - run: mkdir zapfast && tar xzf source.tar.gz -C zapfast
-      - name: Rust target
+      - name: Rust targets
         working-directory: zapfast
-        run: rustup target add "$TARGET"
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: zapfast
-      - name: Build
+      - name: Build both architectures
         working-directory: zapfast
-        run: cargo build --locked --release --target "$TARGET"
-      - name: Disk image
+        run: |
+          cargo build --locked --release --target aarch64-apple-darwin
+          cargo build --locked --release --target x86_64-apple-darwin
+      - name: Universal binary
+        working-directory: zapfast
+        run: |
+          set -euo pipefail
+          mkdir -p universal
+          lipo -create \
+            target/aarch64-apple-darwin/release/zapfast \
+            target/x86_64-apple-darwin/release/zapfast \
+            -output universal/zapfast
+          lipo universal/zapfast -verify_arch arm64 x86_64
+          test "$(universal/zapfast --version)" = "zapfast $VERSION"
+          df -h "$RUNNER_TEMP"
+      - name: App bundle
         working-directory: zapfast
         env:
           MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
           MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
         run: |
           set -euo pipefail
-          lipo -archs "target/$TARGET/release/zapfast" | grep -qx arm64
-          bash packaging/macos/bundle.sh "target/$TARGET/release/zapfast" dmg-root/ZapFast.app "$VERSION"
+          mkdir -p dist/macos-input
+          bash packaging/macos/bundle.sh universal/zapfast dist/macos-input/ZapFast.app "$VERSION"
+          cp README.md LICENSE THIRD-PARTY-NOTICES.md dist/macos-input/
           # Sign with the same self-made certificate as every personal build,
           # so the Keychain keeps trusting ZapFast across updates. An ad-hoc
           # signature changes with every build and asks for the password.
@@ -176,13 +193,20 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -s -k ci "$keychain" >/dev/null
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
           codesign --force --keychain "$keychain" --entitlements packaging/macos/entitlements.plist \
-            --sign "ZapFast Assinatura" dmg-root/ZapFast.app
-          codesign --verify --strict dmg-root/ZapFast.app
-          codesign -dr - dmg-root/ZapFast.app
-          ln -s /Applications dmg-root/Applications
+            --sign "ZapFast Assinatura" dist/macos-input/ZapFast.app
+          codesign --verify --strict dist/macos-input/ZapFast.app
+          codesign -dr - dist/macos-input/ZapFast.app
+      # Upstream's own disk image recipe, the one native-packages runs; with
+      # no Apple credentials it would only call it, as here.
+      - name: Disk image
+        working-directory: zapfast
+        run: |
+          set -euo pipefail
           mkdir -p ../dist
-          hdiutil create -volname ZapFast -srcfolder dmg-root -fs HFS+ -format UDZO \
-            -o "../dist/zapfast-v$VERSION-macos-arm64.dmg"
+          ruby packaging/macos/dmg.rb dist/macos-input "../dist/zapfast-v$VERSION-macos-universal.dmg"
+          # Personal builds up to 0.21.3-personal.5 update from an Apple
+          # silicon image of this name; the universal one runs there too.
+          cp "../dist/zapfast-v$VERSION-macos-universal.dmg" "../dist/zapfast-v$VERSION-macos-arm64.dmg"
       - uses: actions/upload-artifact@v4
         with:
           name: macos
@@ -193,18 +217,32 @@ jobs:
     needs: plan
     if: needs.plan.outputs.build == 'true'
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            arch: x64
+          # Cross-compiled from x64: the MSVC arm64 linker ships with the
+          # runner's Visual Studio.
+          - target: aarch64-pc-windows-msvc
+            arch: arm64
     env:
       VERSION: ${{ needs.plan.outputs.version }}
-      TARGET: x86_64-pc-windows-msvc
+      TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: source
       - shell: bash
         run: mkdir zapfast && tar xzf source.tar.gz -C zapfast
+      - name: Rust target
+        working-directory: zapfast
+        run: rustup target add $env:TARGET
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: zapfast
+          key: ${{ matrix.target }}
       # PowerShell, as upstream builds: vendored OpenSSL needs the runner's
       # Strawberry Perl, and Git Bash's Perl cannot configure it.
       - name: Build
@@ -212,12 +250,14 @@ jobs:
         run: cargo build --locked --release --target $env:TARGET
       # A portable copy, as upstream ships it: the marker beside the
       # executable lets it update itself and keep its data beside it.
-      - name: Package
+      - name: Portable zip
         working-directory: zapfast
         shell: bash
         run: |
           set -euo pipefail
-          test "$(target/$TARGET/release/zapfast.exe --version | tr -d '\r')" = "zapfast $VERSION"
+          if [ "$TARGET" = x86_64-pc-windows-msvc ]; then
+            test "$(target/$TARGET/release/zapfast.exe --version | tr -d '\r')" = "zapfast $VERSION"
+          fi
           name="zapfast-v$VERSION-$TARGET"
           mkdir -p "../dist/$name"
           cp "target/$TARGET/release/zapfast.exe" README.md LICENSE THIRD-PARTY-NOTICES.md \
@@ -225,17 +265,217 @@ jobs:
           cd ../dist
           7z a "$name.zip" "$name" >/dev/null
           rm -rf "$name"
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+      # Upstream's own Windows Installer recipe, the one native-packages
+      # runs; unsigned, as this fork has no code signing account.
+      - name: Windows Installer package
+        working-directory: zapfast
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add --global WixToolset.Util.wixext/5.0.2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:Path += ";$env:USERPROFILE\.dotnet\tools"
+          $payload = "$env:RUNNER_TEMP\windows-input-$env:TARGET"
+          New-Item -ItemType Directory -Force $payload | Out-Null
+          Copy-Item "target\$env:TARGET\release\zapfast.exe", README.md, LICENSE, THIRD-PARTY-NOTICES.md, `
+            packaging\windows\zapfast-installer.txt $payload
+          ruby packaging\windows\msi.rb $payload "..\dist\zapfast-v$env:VERSION-$env:TARGET.msi" $env:VERSION ${{ matrix.arch }}
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
-          name: windows
-          path: dist/*.zip
+          name: windows-${{ matrix.target }}
+          path: |
+            dist/*.zip
+            dist/*.msi
+          if-no-files-found: error
+
+  linux:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ${{ matrix.os }}
+    # As upstream: built in Debian 12, so the binary needs glibc 2.36 or
+    # newer and runs on Debian 12, Ubuntu 22.10, Fedora 37 and later.
+    container: debian:12
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          # A native arm64 runner, so the GUI's system libraries need no
+          # cross-compilation sysroot.
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      TARGET: ${{ matrix.target }}
+    steps:
+      # The bare image has no curl, git or certificates. Steps run as root.
+      - name: GUI build dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates curl git build-essential pkg-config zstd \
+            libxkbcommon-dev libwayland-dev libgl1-mesa-dev libasound2-dev \
+            libpipewire-0.3-dev clang libclang-dev cmake perl
+      - uses: actions/download-artifact@v4
+        with:
+          name: source
+      - run: mkdir zapfast && tar xzf source.tar.gz -C zapfast
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      # The repository pins its toolchain; add the target to the one the
+      # pin resolves to.
+      - name: Rust target
+        working-directory: zapfast
+        run: rustup target add "$TARGET"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: zapfast
+          key: ${{ matrix.target }}
+      - name: Build
+        working-directory: zapfast
+        run: cargo build --locked --release --target "$TARGET"
+      - name: Package
+        working-directory: zapfast
+        run: |
+          set -euo pipefail
+          name="zapfast-v$VERSION-$TARGET"
+          mkdir -p "../dist/$name"
+          cp "target/$TARGET/release/zapfast" README.md LICENSE THIRD-PARTY-NOTICES.md \
+            packaging/zapfast-portable.txt "../dist/$name/"
+          # Desktop integration for package builds and hand-installs.
+          cp --parents packaging/applications/zapfast.desktop packaging/icons/zapfast.svg \
+            contrib/omarchy/zapfast.json.tpl contrib/omarchy/zapfast-theme "../dist/$name/"
+          cd ../dist
+          tar czf "$name.tar.gz" "$name"
+          rm -rf "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  # The x64 Linux build packaged as a Flatpak bundle, as upstream does: the
+  # same binary in the sandbox packaging/flatpak describes.
+  flatpak:
+    needs: [plan, linux]
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
+      options: --privileged
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: source
+      - run: mkdir zapfast && tar xzf source.tar.gz -C zapfast
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-x86_64-unknown-linux-gnu
+          path: linux
+      - name: Unpack the Linux build
+        run: |
+          set -eu
+          tar xzf "linux/zapfast-v$VERSION-x86_64-unknown-linux-gnu.tar.gz" -C zapfast/packaging/flatpak
+          mv "zapfast/packaging/flatpak/zapfast-v$VERSION-x86_64-unknown-linux-gnu" zapfast/packaging/flatpak/built
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          manifest-path: zapfast/packaging/flatpak/rocks.zapfast.ZapFast.bundle.yml
+          bundle: zapfast-v${{ needs.plan.outputs.version }}-x86_64.flatpak
+          cache: false
+          upload-artifact: false
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flatpak
+          path: "*.flatpak"
+          if-no-files-found: error
+
+  # deb, rpm and AppImage for both architectures, plus the packaging recipes
+  # and their checksums, made by native-packages as upstream's packaging
+  # workflow makes them, from the files the jobs above built.
+  linux-packages:
+    needs: [plan, linux, macos]
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: source
+      - run: mkdir zapfast && tar xzf source.tar.gz -C zapfast
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: linux-*
+          path: zapfast/dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos
+          path: zapfast/dist
+      - name: Source archive the recipes describe
+        run: cp source.tar.gz "zapfast/dist/zapfast-$VERSION.tar.gz"
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+      - name: Install native-packages
+        run: |
+          set -euo pipefail
+          gem install native-packages --version "$(sed -n 's/^  version: //p' zapfast/native-packages.yaml)" --no-document
+          # It accepts only -alpha.N, -beta.N and -rc.N prereleases; let it
+          # take this fork's -personal.N too. Nothing else reads the suffix.
+          support=$(gem contents native-packages | grep '/native_packages/support\.rb$')
+          sed -i 's/(alpha|beta|rc)/(alpha|beta|rc|personal)/' "$support"
+          grep -qF '(alpha|beta|rc|personal)' "$support"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.4"
+          cache: false
+      - name: Install packaging tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libarchive-tools binutils xz-utils squashfs-tools zsync
+          go install "github.com/goreleaser/nfpm/v2/cmd/nfpm@v$(sed -n 's/^  nfpm: //p' zapfast/native-packages.yaml)"
+      - name: Build packages
+        working-directory: zapfast
+        run: |
+          set -euo pipefail
+          native-packages validate
+          native-packages build --version "$VERSION" --target linux-amd64 --target linux-arm64 \
+            --output "$RUNNER_TEMP/native-packages"
+          mkdir -p ../dist
+          find "$RUNNER_TEMP/native-packages" -type f \( -name '*.deb' -o -name '*.rpm' \
+            -o -name '*.AppImage' -o -name '*-packaging.tar.xz' -o -name 'packaging-checksums.txt' \) \
+            -exec cp {} ../dist/ \;
+          # deb and rpm write the prerelease as ~personal.N, and a release
+          # asset name cannot carry a tilde: name them -personal.N instead.
+          cd ../dist
+          shopt -s nullglob
+          for file in *~*; do
+            mv "$file" "${file//\~/-}"
+          done
+          sed -i 's/~/-/g' packaging-checksums.txt
+          ls -l
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: dist/*
           if-no-files-found: error
 
   publish:
-    needs: [plan, macos, windows]
+    needs: [plan, macos, windows, linux, flatpak, linux-packages]
     if: >-
       always() && needs.plan.outputs.build == 'true' &&
-      (needs.macos.result == 'success' || needs.windows.result == 'success')
+      (needs.macos.result == 'success' || needs.windows.result == 'success' ||
+       needs.linux.result == 'success')
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.plan.outputs.version }}
@@ -246,16 +486,14 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: source
+      # Every platform's files, whichever jobs finished.
       - uses: actions/download-artifact@v4
-        continue-on-error: true
         with:
-          name: macos
+          pattern: "{macos,windows-*,linux-*,flatpak}"
           path: dist
-      - uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: windows
-          path: dist
+          merge-multiple: true
+      - name: List the downloads
+        run: ls -l dist
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "4.0"
@@ -272,13 +510,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Only a build with both platforms counts as done; a partial one
+          # Only a build with every platform counts as done; a partial one
           # is built again at the next scheduled run.
-          if [ "${{ needs.macos.result }}" = success ] && [ "${{ needs.windows.result }}" = success ]; then
+          results="macOS: ${{ needs.macos.result }}, Windows: ${{ needs.windows.result }}, Linux: ${{ needs.linux.result }}, Flatpak: ${{ needs.flatpak.result }}, Linux packages: ${{ needs.linux-packages.result }}"
+          if [ "${{ needs.macos.result }}" = success ] && [ "${{ needs.windows.result }}" = success ] &&
+             [ "${{ needs.linux.result }}" = success ] && [ "${{ needs.flatpak.result }}" = success ] &&
+             [ "${{ needs.linux-packages.result }}" = success ]; then
             printf '\n<!-- fingerprint: %s -->\n' "${{ needs.plan.outputs.fingerprint }}" >> notes.md
           else
-            printf '\nOnly part of this build finished (macOS: %s, Windows: %s).\n' \
-              "${{ needs.macos.result }}" "${{ needs.windows.result }}" >> notes.md
+            printf '\nOnly part of this build finished (%s).\n' "$results" >> notes.md
           fi
           gh release create "v$VERSION" dist/* -R "$GITHUB_REPOSITORY" \
             --target personal --latest \
