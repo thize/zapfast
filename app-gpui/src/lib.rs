@@ -10,6 +10,7 @@ pub mod demo;
 pub mod identity;
 pub mod instance;
 pub mod palette;
+pub mod platform;
 pub mod shell;
 pub mod state;
 pub mod ui;

@@ -286,6 +286,11 @@ impl Store {
 
     /// Whether the window is the one in front. A window that comes back to
     /// the front reads the chat it shows.
+    /// Whether the window is the one in front.
+    pub fn is_window_active(&self) -> bool {
+        self.window_active
+    }
+
     pub fn set_window_active(&mut self, active: bool, cx: &mut Context<Self>) {
         if self.window_active == active {
             return;

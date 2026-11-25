@@ -50,6 +50,13 @@ unicode-segmentation = "1"
 fastframe-instance = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1" }
 fastframe-autostart = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1" }
 anyhow = "1"
+# The tray item, the Dock badge and desktop notifications: ZapFast's own
+# platform crates, at the tag the root declares. The tray icon is the logo,
+# rasterized with resvg as the root does.
+fastframe-tray = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1" }
+fastframe-dock = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1" }
+fastframe-notifications = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1" }
+resvg = { version = "0.45", default-features = false }
 # Pictures, animations and video surfaces for the bubbles (Phase 3).
 zapfast-gpui-media = { path = "../media-gpui" }
 

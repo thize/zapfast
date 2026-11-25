@@ -260,6 +260,12 @@ fn boot(cli: Cli, real: Option<Real>, cx: &mut App) {
         }
     }
 
+    // A window a person uses gets the tray item, the Dock badge and desktop
+    // notifications; the benchmarks and snapshots leave nothing on the desktop.
+    if !cli.automated() {
+        crate::platform::install::install(window, store.clone(), cx);
+    }
+
     match (&cli.bench, &cli.snapshot, injector) {
         (Some((BenchKind::Idle, seconds)), _, _) => idle_bench(stats, *seconds, started, cx),
         (_, Some(dir), Some(injector)) => snapshot(window, injector, dir.clone(), cx),

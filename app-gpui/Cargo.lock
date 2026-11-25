@@ -11628,7 +11628,10 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "fastframe-autostart",
+ "fastframe-dock",
  "fastframe-instance",
+ "fastframe-notifications",
+ "fastframe-tray",
  "futures",
  "gpui-component",
  "gpui-pre",
@@ -11638,6 +11641,7 @@ dependencies = [
  "keyring-core",
  "log",
  "qrcode",
+ "resvg 0.45.1",
  "tempfile",
  "unicode-segmentation",
  "zapfast",

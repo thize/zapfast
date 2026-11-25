@@ -153,6 +153,17 @@ impl ChatList {
         !self.avatars.contains_key(id) && self.avatar_requested.insert(id.to_owned())
     }
 
+    /// The Dock and tray count: unarchived, unmuted, unlocked chats that look
+    /// unread. WhatsApp counts chats here, not the messages inside them.
+    pub fn unread_chat_count(&self, now: i64) -> u32 {
+        self.chats
+            .iter()
+            .filter(|chat| {
+                !chat.archived && !chat.locked && !chat.muted(now) && chat.looks_unread()
+            })
+            .count() as u32
+    }
+
     /// The chats the list shows, in order.
     pub fn visible(&self) -> Vec<&Chat> {
         let needle = search_key(self.query.trim());
@@ -228,6 +239,33 @@ pub(crate) mod fixtures {
             status: Delivery::None,
         });
         chat
+    }
+}
+
+#[cfg(test)]
+mod count_tests {
+    use super::*;
+    use fixtures::chat;
+
+    #[test]
+    fn the_badge_counts_unread_unmuted_unarchived_chats() {
+        let mut list = ChatList::default();
+        let mut unread = chat("a@s.whatsapp.net", "A", 3);
+        unread.unread = 4;
+        let mut marked = chat("b@s.whatsapp.net", "B", 2);
+        marked.marked_unread = true;
+        let mut muted = chat("c@s.whatsapp.net", "C", 1);
+        muted.unread = 2;
+        muted.muted_until = Some(0);
+        let mut archived = chat("d@s.whatsapp.net", "D", 1);
+        archived.unread = 2;
+        archived.archived = true;
+        let read = chat("e@s.whatsapp.net", "E", 1);
+        for chat in [unread, marked, muted, archived, read] {
+            list.chats.push(chat);
+        }
+        // Two chats, not six messages.
+        assert_eq!(list.unread_chat_count(100), 2);
     }
 }
 
