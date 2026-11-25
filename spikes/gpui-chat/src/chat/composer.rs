@@ -49,6 +49,11 @@ impl Composer {
         }
     }
 
+    #[cfg(test)]
+    pub fn state(&self) -> &Entity<TextareaState> {
+        &self.state
+    }
+
     fn submit(
         &mut self,
         state: &Entity<TextareaState>,

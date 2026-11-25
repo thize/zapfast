@@ -21,7 +21,7 @@ fn main() {
         Err(message) => {
             eprintln!("{message}");
             eprintln!(
-                "usage: gpui-chat-spike [--scene chat|media|platform] [--bench idle|scroll] [--seconds N] [--snapshot DIR] [--jump MESSAGE]"
+                "usage: gpui-chat-spike [--scene chat|media|platform] [--bench idle|scroll] [--seconds N] [--snapshot DIR] [--jump MESSAGE] [--appearance light|dark]"
             );
             std::process::exit(2);
         }

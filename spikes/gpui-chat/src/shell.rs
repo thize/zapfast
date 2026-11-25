@@ -49,12 +49,22 @@ pub fn apply_theme(palette: Palette, cx: &mut gpui::App) {
         theme.colors.caret = palette.text;
         theme.colors.selection = palette.selection;
         theme.colors.input = palette.outline;
-        // A caret that blinks for a few seconds after typing, then rests:
-        // nothing repaints while idle.
-        theme.cursor_blink =
-            gpui_component::input::CursorBlink::blinking(std::time::Duration::from_millis(530))
-                .with_idle_timeout(std::time::Duration::from_secs(4));
+        theme.cursor_blink = caret_policy(true);
     });
+}
+
+/// A caret that blinks for a few seconds after typing, then rests; steady
+/// (no timer at all) while the window is not the active one. gpui-component
+/// only restarts the blink on activation and never stops it on deactivation
+/// (gpui-base input/base/state.rs:972-985), so the policy does it.
+pub fn caret_policy(window_active: bool) -> gpui_component::input::CursorBlink {
+    use gpui_component::input::CursorBlink;
+    if window_active {
+        CursorBlink::blinking(std::time::Duration::from_millis(530))
+            .with_idle_timeout(std::time::Duration::from_secs(4))
+    } else {
+        CursorBlink::steady()
+    }
 }
 
 impl Shell {
@@ -70,8 +80,12 @@ impl Shell {
         let media = cx.new(|_| MediaScene);
         let platform = cx.new(|_| PlatformScene);
 
-        let appearance = window.observe_window_appearance(|window, cx| {
-            let palette = Palette::for_window(window.appearance());
+        let forced = cli.dark;
+        let appearance = window.observe_window_appearance(move |window, cx| {
+            let palette = match forced {
+                Some(dark) => Palette::for_appearance(dark),
+                None => Palette::for_window(window.appearance()),
+            };
             cx.set_global(ActivePalette(palette));
             apply_theme(palette, cx);
             window.refresh();
@@ -80,8 +94,10 @@ impl Shell {
         // GPUI redraws every view when the window gains or loses focus; that
         // is the user's doing, not idle repainting, so the bench discounts it.
         let activation_stats = stats.clone();
-        let activation = cx.observe_window_activation(window, move |_, _, _| {
+        let activation = cx.observe_window_activation(window, move |_, window, cx| {
             activation_stats.activation_changed();
+            let active = window.is_window_active();
+            Theme::update(cx, |theme| theme.cursor_blink = caret_policy(active));
         });
         let shell = Self {
             scene: cli.scene,

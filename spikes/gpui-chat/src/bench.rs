@@ -50,6 +50,8 @@ pub struct Cli {
     pub scene: SceneKind,
     /// Opens with this message at the top, as Cmd+J would (for snapshots).
     pub jump: Option<usize>,
+    /// Forces light or dark instead of following the OS (`Some(true)` is dark).
+    pub dark: Option<bool>,
 }
 
 impl Cli {
@@ -86,6 +88,13 @@ impl Cli {
                         .and_then(SceneKind::parse)
                         .ok_or("--scene takes chat, media or platform")?;
                 }
+                "--appearance" => {
+                    cli.dark = Some(match args.next().as_deref() {
+                        Some("dark") => true,
+                        Some("light") => false,
+                        _ => return Err("--appearance takes light or dark".into()),
+                    });
+                }
                 "--jump" => {
                     cli.jump = Some(
                         args.next()
@@ -112,6 +121,10 @@ pub struct Stats {
     frames: RefCell<Vec<Instant>>,
     recording_frames: Cell<bool>,
     activations: RefCell<Vec<Instant>>,
+    /// Time from `render` to the paint of the same frame, in milliseconds: the
+    /// CPU cost of the frame (render, layout, prepaint, paint).
+    work_ms: RefCell<Vec<f64>>,
+    last_render: Cell<Option<Instant>>,
 }
 
 impl Stats {
@@ -120,13 +133,32 @@ impl Stats {
     }
 
     pub fn render(&self) {
-        self.renders.borrow_mut().push(Instant::now());
+        let now = Instant::now();
+        self.renders.borrow_mut().push(now);
+        self.last_render.set(Some(now));
     }
 
     pub fn frame(&self) {
         if self.recording_frames.get() {
-            self.frames.borrow_mut().push(Instant::now());
+            let now = Instant::now();
+            self.frames.borrow_mut().push(now);
+            if let Some(start) = self.last_render.take() {
+                self.work_ms
+                    .borrow_mut()
+                    .push((now - start).as_secs_f64() * 1000.0);
+            }
         }
+    }
+
+    /// `(p50, p95, max)` of the per-frame CPU cost, for the stderr trace.
+    pub fn work_summary_ms(&self) -> (f64, f64, f64) {
+        let mut work = self.work_ms.borrow().clone();
+        work.sort_by(f64::total_cmp);
+        (
+            percentile(&work, 0.5),
+            percentile(&work, 0.95),
+            work.last().copied().unwrap_or(0.0),
+        )
     }
 
     pub fn record_frames(&self, on: bool) {
@@ -194,14 +226,13 @@ pub fn scroll_line(gaps_ms: &[f64]) -> String {
     )
 }
 
-/// Extra line when the numbers are probably affected by running unfocused in a
-/// debug build: macOS gives a background window frames at about half the
-/// display rate, and focus is never taken to avoid that.
+/// A note (printed to stderr) when the numbers are probably affected by the
+/// window running unfocused: frames then come at about half the display rate.
 pub fn scroll_note(gaps_ms: &[f64]) -> Option<String> {
     let mut sorted = gaps_ms.to_vec();
     sorted.sort_by(f64::total_cmp);
     (percentile(&sorted, 0.50) > 24.0).then(|| {
-        "BENCH note=frame gaps cluster near 33 ms: the window runs unfocused (background mode) in a debug build, so frames are likely paced at 30 Hz; compare relative numbers only".to_owned()
+        "BENCH note=frame gaps cluster near 33 ms: the window is probably unfocused or occluded, which paces frames at 30 Hz; see the CPU cost line for what the frames themselves take".to_owned()
     })
 }
 

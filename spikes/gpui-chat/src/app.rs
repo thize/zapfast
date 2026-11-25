@@ -42,7 +42,10 @@ fn boot(cli: Cli, cx: &mut App) {
         eprintln!("could not load Inter: {error:#}");
     }
     gpui_component::init(cx);
-    let palette = Palette::for_window(cx.window_appearance());
+    let palette = match cli.dark {
+        Some(dark) => Palette::for_appearance(dark),
+        None => Palette::for_window(cx.window_appearance()),
+    };
     cx.set_global(ActivePalette(palette));
     apply_theme(palette, cx);
 

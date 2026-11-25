@@ -108,6 +108,10 @@ impl Palette {
         }
     }
 
+    pub fn for_appearance(dark: bool) -> Self {
+        if dark { Self::dark() } else { Self::light() }
+    }
+
     pub fn for_window(appearance: WindowAppearance) -> Self {
         match appearance {
             WindowAppearance::Dark | WindowAppearance::VibrantDark => Self::dark(),

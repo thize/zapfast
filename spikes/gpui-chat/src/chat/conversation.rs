@@ -291,9 +291,22 @@ impl ConversationView {
         // The text under a stationary pointer changes as the list scrolls, so
         // re-resolve it from the layouts painted since the last tick.
         self.follow_pointer();
-        self.list.scroll_by(px(self.scroll_speed));
+        self.scroll_list_by(self.scroll_speed);
         cx.notify();
         true
+    }
+
+    /// Scrolls by `dy` pixels (positive is down). `ListState::scroll_by` cannot
+    /// be used here: in a bottom-aligned list that sits at its end it measures
+    /// from the end of the content rather than from the top of the viewport,
+    /// so a small step up leaves less than a viewport below the new anchor and
+    /// the next layout snaps the list straight back to the bottom
+    /// (gpui-pre list.rs:554-583 against :1173-1185). The scrollbar API works
+    /// in viewport-top offsets, which is what is needed.
+    fn scroll_list_by(&self, dy: f32) {
+        let top = -self.list.scroll_px_offset_for_scrollbar().y;
+        self.list
+            .set_offset_from_scrollbar(point(px(0.), -(top + px(dy))));
     }
 
     fn selected_text(&self) -> Option<String> {
@@ -523,6 +536,10 @@ impl ConversationView {
                 self.stats.record_frames(false);
                 let gaps = self.stats.frame_gaps_ms();
                 println!("{}", scroll_line(&gaps));
+                let (p50, p95, max) = self.stats.work_summary_ms();
+                eprintln!(
+                    "frame CPU cost (render to paint): p50={p50:.2} ms p95={p95:.2} ms max={max:.2} ms"
+                );
                 if let Some(note) = scroll_note(&gaps) {
                     // stderr: stdout carries only the PID and BENCH lines.
                     eprintln!("{note}");
@@ -610,7 +627,7 @@ fn pointer_driver(view: WeakEntity<ConversationView>, stats: Rc<Stats>) -> impl 
         },
     )
     .absolute()
-    .size_full()
+    .inset_0()
 }
 
 impl Render for ConversationView {
@@ -757,6 +774,211 @@ mod tests {
             let painted = view.registry.visible(view.list.viewport_bounds());
             assert!(painted.iter().any(|(message, _, _)| *message == before));
         });
+    }
+
+    fn redraw(cx: &mut gpui::VisualTestContext) {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    fn visible_text_boxes(
+        view: &Entity<ConversationView>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> Vec<(usize, gpui::Bounds<Pixels>)> {
+        view.read_with(cx, |view, _| {
+            view.registry
+                .visible(view.list.viewport_bounds())
+                .into_iter()
+                .map(|(message, _, bounds)| (message, bounds))
+                .collect()
+        })
+    }
+
+    #[gpui::test]
+    fn dragging_across_bubbles_selects_and_copies_in_whatsapp_format(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx, 300);
+        let boxes = visible_text_boxes(&view, cx);
+        assert!(boxes.len() >= 4, "only {} bubbles painted", boxes.len());
+        // Skip the edge bubbles: they may be cut off by the viewport.
+        let (first, first_box) = boxes[1];
+        let (last, last_box) = boxes[boxes.len() - 2];
+        let start = point(first_box.left() + px(4.), first_box.top() + px(2.));
+        let end = point(last_box.left() + px(30.), last_box.top() + px(2.));
+        let none = gpui::Modifiers::none();
+
+        cx.simulate_mouse_down(start, MouseButton::Left, none);
+        redraw(cx);
+        cx.simulate_mouse_move(end, MouseButton::Left, none);
+        redraw(cx);
+        cx.simulate_mouse_up(end, MouseButton::Left, none);
+
+        let selection = view
+            .read_with(cx, |view, _| view.selection)
+            .expect("a selection");
+        let (from, to) = selection.ordered();
+        assert_eq!(from.msg, first);
+        assert_eq!(to.msg, last);
+        assert!(to.offset > 0);
+
+        let copied = view
+            .read_with(cx, |view, _| view.selected_text())
+            .expect("text to copy");
+        let lines: Vec<_> = copied.lines().filter(|l| l.starts_with('[')).collect();
+        assert!(lines.len() >= 3, "{copied}");
+        assert!(lines[0].starts_with('['), "{copied}");
+        assert!(
+            lines
+                .iter()
+                .all(|l| l.contains(", ") && l.contains("] ") && l.contains(": "))
+        );
+
+        // Esc clears it.
+        view.update(cx, |view, cx| {
+            view.selection = None;
+            cx.notify();
+        });
+        assert!(view.read_with(cx, |view, _| view.selected_text()).is_none());
+    }
+
+    #[gpui::test]
+    fn double_click_selects_a_word_and_shift_click_extends(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx, 300);
+        let boxes = visible_text_boxes(&view, cx);
+        let (message, bounds) = boxes[boxes.len() / 2];
+        let at = point(bounds.left() + px(3.), bounds.top() + px(2.));
+        cx.simulate_event(MouseDownEvent {
+            position: at,
+            modifiers: gpui::Modifiers::none(),
+            button: MouseButton::Left,
+            click_count: 2,
+            first_mouse: false,
+        });
+        cx.simulate_event(MouseUpEvent {
+            position: at,
+            modifiers: gpui::Modifiers::none(),
+            button: MouseButton::Left,
+            click_count: 2,
+        });
+        redraw(cx);
+        let (text, selection) = view.read_with(cx, |view, _| {
+            (
+                view.message(message).text().to_owned(),
+                view.selection.expect("selected"),
+            )
+        });
+        let (from, to) = selection.ordered();
+        assert_eq!((from.msg, to.msg), (message, message));
+        let word = &text[from.offset..to.offset];
+        assert!(!word.is_empty() && !word.contains(' '), "{word:?}");
+
+        // Shift-click further down grows it across messages.
+        let (later, later_box) = *boxes.last().unwrap();
+        let far = point(later_box.left() + px(40.), later_box.top() + px(2.));
+        let shift = gpui::Modifiers {
+            shift: true,
+            ..gpui::Modifiers::none()
+        };
+        cx.simulate_mouse_down(far, MouseButton::Left, shift);
+        cx.simulate_mouse_up(far, MouseButton::Left, shift);
+        let extended = view
+            .read_with(cx, |view, _| view.selection)
+            .expect("still selected");
+        assert_eq!(extended.anchor, selection.anchor);
+        assert_eq!(extended.focus.msg, later);
+    }
+
+    #[gpui::test]
+    fn triple_click_selects_the_whole_message_and_a_plain_click_clears(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx, 300);
+        let boxes = visible_text_boxes(&view, cx);
+        let (message, bounds) = boxes[1];
+        let at = point(bounds.left() + px(3.), bounds.top() + px(2.));
+        cx.simulate_event(MouseDownEvent {
+            position: at,
+            modifiers: gpui::Modifiers::none(),
+            button: MouseButton::Left,
+            click_count: 3,
+            first_mouse: false,
+        });
+        cx.simulate_event(MouseUpEvent {
+            position: at,
+            modifiers: gpui::Modifiers::none(),
+            button: MouseButton::Left,
+            click_count: 3,
+        });
+        let (len, selection) = view.read_with(cx, |view, _| {
+            (
+                view.message(message).text().len(),
+                view.selection.expect("selected"),
+            )
+        });
+        assert_eq!(
+            selection.ordered(),
+            (Pos::new(message, 0), Pos::new(message, len))
+        );
+        redraw(cx);
+        // A single click without a drag leaves nothing selected.
+        cx.simulate_click(at, gpui::Modifiers::none());
+        assert!(view.read_with(cx, |view, _| view.selection).is_none());
+    }
+
+    #[gpui::test]
+    fn holding_the_pointer_at_the_top_edge_scrolls_and_extends_the_selection(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, cx) = open(cx, 600);
+        let boxes = visible_text_boxes(&view, cx);
+        let (anchor_msg, anchor_box) = boxes[boxes.len() - 2];
+        let viewport = view.read_with(cx, |view, _| view.list.viewport_bounds());
+        let none = gpui::Modifiers::none();
+        let start = point(anchor_box.left() + px(4.), anchor_box.top() + px(2.));
+        cx.simulate_mouse_down(start, MouseButton::Left, none);
+        redraw(cx);
+        // Park the pointer inside the top edge zone, then let time pass with
+        // the pointer still: only the autoscroll timer moves anything.
+        let edge = point(viewport.left() + px(60.), viewport.top() + px(6.));
+        cx.simulate_mouse_move(edge, MouseButton::Left, none);
+        for _ in 0..40 {
+            cx.background_executor.advance_clock(TICK);
+            cx.run_until_parked();
+            redraw(cx);
+        }
+        redraw(cx);
+        let (scrolled_up, selection) = view.read_with(cx, |view, _| {
+            (!view.at_bottom(), view.selection.expect("a selection"))
+        });
+        assert!(scrolled_up, "the list did not scroll");
+        assert_eq!(selection.anchor.msg, anchor_msg);
+        assert!(
+            selection.focus.msg + 3 < anchor_msg,
+            "focus {} did not move well above anchor {anchor_msg}",
+            selection.focus.msg
+        );
+
+        // Releasing stops the timer: nothing moves afterwards.
+        cx.simulate_mouse_up(edge, MouseButton::Left, none);
+        let before = view.read_with(cx, |view, _| view.list.logical_scroll_top());
+        for _ in 0..10 {
+            cx.background_executor.advance_clock(TICK);
+            cx.run_until_parked();
+        }
+        let after = view.read_with(cx, |view, _| view.list.logical_scroll_top());
+        assert_eq!(before, after);
+        assert!(view.read_with(cx, |view, _| view.autoscroll.is_none()));
+
+        // Copy through the real action path puts the WhatsApp format on the clipboard.
+        cx.dispatch_action(CopySelection);
+        let copied = cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .expect("something on the clipboard");
+        assert!(
+            copied.lines().filter(|l| l.starts_with('[')).count() >= 3,
+            "{copied}"
+        );
+
+        // Esc clears the selection.
+        cx.dispatch_action(ClearSelection);
+        assert!(view.read_with(cx, |view, _| view.selection.is_none()));
     }
 
     #[gpui::test]
