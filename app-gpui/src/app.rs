@@ -150,11 +150,14 @@ fn boot(cli: Cli, real: Option<Real>, cx: &mut App) {
         KeyBinding::new("escape", ClearSelection, Some("Conversation")),
     ]);
     crate::views::viewer::bind_keys(cx);
+    crate::views::settings::bind_keys(cx);
 
     // The state, fed by the backend, or by the demo through the same path.
+    let mut settings_file = None;
     let (mut bridge, injector, instance) = match real {
         Some((identity, guard, requests)) => {
             let bridge = Bridge::spawn(identity.account());
+            settings_file = Some(identity.dirs.settings_file());
             (bridge, None, Some((guard, requests)))
         }
         None => {
@@ -165,6 +168,17 @@ fn boot(cli: Cli, real: Option<Real>, cx: &mut App) {
     };
     let store = cx.new(|cx| Store::new(bridge.sink(), cx));
     store.update(cx, |_, cx| bridge.pump(cx)).detach();
+    // A real run keeps its settings in its own config folder; a demo keeps
+    // the defaults in memory and never touches the disk.
+    if let Some(path) = settings_file {
+        let settings = store.read(cx).settings.clone();
+        settings.update(cx, |settings, cx| settings.attach(path, cx));
+        cx.on_app_quit(move |cx| {
+            settings.update(cx, |settings, _| settings.flush());
+            async {}
+        })
+        .detach();
+    }
 
     let background = cli.automated();
     let window_size = size(px(1200.), px(800.));
@@ -320,6 +334,7 @@ fn snapshot(
             "chat-photo",
             "viewer",
             "viewer-zoom",
+            "settings",
         ] {
             cx.update(|cx| snapshot_step(name, window, &injector, cx));
             cx.background_executor()
@@ -441,6 +456,16 @@ fn snapshot_step(
                     }
                 });
             }
+        }
+        "settings" => {
+            window
+                .update(cx, |_, window, cx| {
+                    shell.update(cx, |shell, cx| {
+                        shell.close_viewer(window, cx);
+                        shell.open_settings(window, cx)
+                    })
+                })
+                .ok();
         }
         "viewer-zoom" => {
             if let Some(viewer) = shell.read(cx).viewer().cloned() {

@@ -180,6 +180,19 @@ mod tests {
     }
 
     #[test]
+    fn the_settings_file_is_in_the_apps_own_config_folder() {
+        let ours = Identity::discover();
+        let file = ours.dirs.settings_file();
+        assert!(file.starts_with(&ours.dirs.config), "{file:?}");
+        for name in ZAPFAST_NAMES {
+            if let Some(theirs) = AppDirs::of(name) {
+                assert_ne!(file, theirs.settings_file(), "{name}'s settings file");
+                assert!(!file.starts_with(&theirs.config), "inside {name}'s folder");
+            }
+        }
+    }
+
+    #[test]
     fn the_keyring_service_is_not_zapfasts() {
         assert_ne!(keyring_service_name(), DEFAULT_KEYRING_SERVICE);
         assert!(keyring_service_name().contains(APP_ID));

@@ -17,6 +17,15 @@ use zapfast::model::{Chat, ChatId, Delivery};
 
 pub const ROW_HEIGHT: f32 = 72.0;
 
+/// What the list asks of the window around it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChatListViewEvent {
+    /// The menu button was pressed: show the settings.
+    OpenSettings,
+}
+
+impl gpui::EventEmitter<ChatListViewEvent> for ChatListView {}
+
 pub struct ChatListView {
     store: Entity<Store>,
     chats: Entity<ChatList>,
@@ -305,7 +314,12 @@ impl Render for ChatListView {
                                 "icons/plus.svg",
                                 p,
                             ))
-                            .child(header_button("menu", "Menu", "icons/ellipsis.svg", p)),
+                            .child(
+                                header_button("menu", "Configurações", "icons/ellipsis.svg", p)
+                                    .on_click(cx.listener(|_, _, _, cx| {
+                                        cx.emit(ChatListViewEvent::OpenSettings)
+                                    })),
+                            ),
                     ),
             )
             .child(
@@ -371,7 +385,7 @@ fn header_button(
     label: &'static str,
     path: &'static str,
     p: Palette,
-) -> impl IntoElement {
+) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
         .role(Role::Button)

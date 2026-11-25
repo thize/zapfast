@@ -32,6 +32,7 @@ pub fn launch(cx: &mut TestAppContext, connect: bool) -> Demo {
             KeyBinding::new("escape", ClearSelection, Some("Conversation")),
         ]);
         crate::views::viewer::bind_keys(cx);
+        crate::views::settings::bind_keys(cx);
     });
     let (mut bridge, injector) =
         Bridge::detached_with(|injector| Rc::new(demo::Responder::new(injector)));

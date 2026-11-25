@@ -17,6 +17,7 @@ pub mod msgview;
 pub mod panel;
 pub mod selectable;
 pub mod selection;
+pub mod settings;
 pub mod timefmt;
 pub mod viewer;
 

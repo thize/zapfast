@@ -2,6 +2,7 @@
 //! the chat list beside the open chat. It holds the [`Store`] and observes only
 //! the entities it draws, so an idle app renders nothing.
 
+use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::{
@@ -10,15 +11,17 @@ use gpui::{
     Window, div, img, px,
 };
 use gpui_component::{Theme, ThemeMode};
+use zapfast::settings::ThemeChoice;
 
 use crate::bench::Stats;
 use crate::palette::Palette;
-use crate::state::{ChatList, ChatListEvent, Session, Store};
+use crate::state::{ChatList, ChatListEvent, Session, SettingsEvent, Store};
 use crate::ui::{ActivePalette, palette};
 use crate::views::avatar::Avatars;
-use crate::views::chat_list::ChatListView;
+use crate::views::chat_list::{ChatListView, ChatListViewEvent};
 use crate::views::login::LoginView;
 use crate::views::panel::{ChatPanel, PanelEvent};
+use crate::views::settings::{SettingsView, SettingsViewEvent};
 use crate::views::viewer::{Viewer, ViewerEvent, ViewerItem};
 
 pub const SIDEBAR_WIDTH: f32 = 400.0;
@@ -59,6 +62,17 @@ pub fn caret_policy(window_active: bool) -> gpui_component::input::CursorBlink {
     }
 }
 
+/// Sets the palette the window is forced to, or the system's, and draws it.
+fn paint_appearance(forced: &Cell<Option<bool>>, window: &mut Window, cx: &mut gpui::App) {
+    let palette = match forced.get() {
+        Some(dark) => Palette::for_appearance(dark),
+        None => Palette::for_window(window.appearance()),
+    };
+    cx.set_global(ActivePalette(palette));
+    apply_theme(palette, cx);
+    window.refresh();
+}
+
 pub struct Shell {
     store: Entity<Store>,
     session: Entity<Session>,
@@ -69,6 +83,14 @@ pub struct Shell {
     panel: Option<Entity<ChatPanel>>,
     /// The picture viewer, over the whole window while it is open.
     viewer: Option<Entity<Viewer>>,
+    /// The settings page, over the whole window while it is open.
+    settings_view: Option<Entity<SettingsView>>,
+    _settings_events: Option<Subscription>,
+    /// The appearance the window is forced to (`Some(dark)`), `None` to
+    /// follow the system: the command line's, else the settings' theme.
+    forced: Rc<Cell<Option<bool>>>,
+    /// Whether the command line forced it, which settings do not override.
+    cli_forced: bool,
     /// What listens to the open panel and the viewer.
     _panel_events: Option<Subscription>,
     _viewer_events: Option<Subscription>,
@@ -101,15 +123,23 @@ impl Shell {
                 }
             },
         );
-        let appearance = window.observe_window_appearance(move |window, cx| {
-            let palette = match forced_dark {
-                Some(dark) => Palette::for_appearance(dark),
-                None => Palette::for_window(window.appearance()),
-            };
-            cx.set_global(ActivePalette(palette));
-            apply_theme(palette, cx);
-            window.refresh();
+        let forced = Rc::new(Cell::new(forced_dark));
+        let appearance = window.observe_window_appearance({
+            let forced = forced.clone();
+            move |window, cx| paint_appearance(&forced, window, cx)
         });
+        let on_settings = cx.subscribe_in(
+            &store.read(cx).settings.clone(),
+            window,
+            |this, _, _: &SettingsEvent, window, cx| this.follow_theme(window, cx),
+        );
+        let on_menu = cx.subscribe_in(
+            &list,
+            window,
+            |this, _, event: &ChatListViewEvent, window, cx| match event {
+                ChatListViewEvent::OpenSettings => this.open_settings(window, cx),
+            },
+        );
         // GPUI redraws every view when the window gains or loses focus; the
         // idle benchmark discounts that, and the store reads or leaves a chat
         // unread by whether the window is the one in front.
@@ -124,6 +154,8 @@ impl Shell {
         let subscriptions = vec![
             cx.observe(&session, |_, _, cx| cx.notify()),
             on_open,
+            on_settings,
+            on_menu,
             appearance,
             activation,
         ];
@@ -136,6 +168,10 @@ impl Shell {
             list,
             panel: None,
             viewer: None,
+            settings_view: None,
+            _settings_events: None,
+            forced: forced.clone(),
+            cli_forced: forced_dark.is_some(),
             _panel_events: None,
             _viewer_events: None,
             stats,
@@ -144,7 +180,61 @@ impl Shell {
         };
         let open = this.chats.read(cx).open.clone();
         this.show_chat(open, window, cx);
+        this.follow_theme(window, cx);
         this
+    }
+
+    /// Takes the theme the settings choose (unless the command line forced
+    /// one): light, dark, or the system's.
+    fn follow_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.cli_forced {
+            return;
+        }
+        let theme = self.store.read(cx).settings.read(cx).get().theme;
+        let chosen = match theme {
+            ThemeChoice::Light => Some(false),
+            ThemeChoice::Dark => Some(true),
+            ThemeChoice::System | ThemeChoice::Messages => None,
+        };
+        if self.forced.replace(chosen) != chosen {
+            paint_appearance(&self.forced, window, cx);
+        }
+    }
+
+    /// Opens the settings page over the window.
+    pub fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings_view.is_some() {
+            return;
+        }
+        let settings = self.store.read(cx).settings.clone();
+        let page = cx.new(|cx| SettingsView::new(settings, cx));
+        self._settings_events = Some(cx.subscribe_in(
+            &page,
+            window,
+            |this, _, SettingsViewEvent::Close, window, cx| this.close_settings(window, cx),
+        ));
+        window.focus(&page.read(cx).focus_handle(cx), cx);
+        self.settings_view = Some(page);
+        cx.notify();
+    }
+
+    pub fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings_view.take().is_none() {
+            return;
+        }
+        self._settings_events = None;
+        match &self.panel {
+            Some(panel) => {
+                let handle = panel.read(cx).focus_handle(cx);
+                window.focus(&handle, cx);
+            }
+            None => window.focus(&self.focus, cx),
+        }
+        cx.notify();
+    }
+
+    pub fn settings_view(&self) -> Option<&Entity<SettingsView>> {
+        self.settings_view.as_ref()
     }
 
     /// Opens the pane of `chat`, or closes it with `None`.
@@ -288,6 +378,7 @@ impl Render for Shell {
             )
             .child(div().flex_1().min_w_0().h_full().child(right))
             .children(self.viewer.clone())
+            .children(self.settings_view.clone())
             .into_any_element()
     }
 }
@@ -353,6 +444,63 @@ mod tests {
         cx.simulate_keystrokes("escape");
         cx.run_until_parked();
         assert!(shell.read_with(cx, |shell, _| shell.viewer().is_none()));
+    }
+
+    #[gpui::test]
+    fn the_settings_page_opens_follows_the_theme_and_escape_closes_it(cx: &mut TestAppContext) {
+        let demo = launch(cx, true);
+        let store = demo.store.clone();
+        let (shell, cx) = cx.add_window_view({
+            let store = store.clone();
+            move |window, cx| Shell::new(store, Stats::new(), None, window, cx)
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| shell.update(cx, |shell, cx| shell.open_settings(window, cx)));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(shell.read_with(cx, |shell, _| shell.settings_view().is_some()));
+
+        // The theme the reader picks becomes the app's palette at once.
+        let settings = store.read_with(cx, |store, _| store.settings.clone());
+        settings.update(cx, |s, cx| {
+            s.update(|s| s.theme = zapfast::settings::ThemeChoice::Light, cx)
+        });
+        assert!(!cx.update(|_, cx| crate::ui::palette(cx).dark));
+        settings.update(cx, |s, cx| {
+            s.update(|s| s.theme = zapfast::settings::ThemeChoice::Dark, cx)
+        });
+        assert!(cx.update(|_, cx| crate::ui::palette(cx).dark));
+
+        // The switches the store reads follow the settings.
+        settings.update(cx, |s, cx| {
+            s.update(
+                |s| {
+                    s.auto_download = false;
+                    s.send_read_receipts = false;
+                },
+                cx,
+            )
+        });
+        assert!(!store.read_with(cx, |store, _| store.auto_download));
+        assert!(!store.read_with(cx, |store, _| store.send_read_receipts));
+
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert!(shell.read_with(cx, |shell, _| shell.settings_view().is_none()));
+    }
+
+    #[gpui::test]
+    fn a_forced_appearance_is_not_overridden_by_the_settings(cx: &mut TestAppContext) {
+        let demo = launch(cx, true);
+        let store = demo.store.clone();
+        let (_shell, cx) = cx.add_window_view({
+            let store = store.clone();
+            move |window, cx| Shell::new(store, Stats::new(), Some(true), window, cx)
+        });
+        let settings = store.read_with(cx, |store, _| store.settings.clone());
+        settings.update(cx, |s, cx| {
+            s.update(|s| s.theme = zapfast::settings::ThemeChoice::Light, cx)
+        });
+        assert!(cx.update(|_, cx| crate::ui::palette(cx).dark));
     }
 
     #[gpui::test]

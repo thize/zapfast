@@ -16,13 +16,14 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use gpui::{AppContext as _, Context, Entity, EventEmitter};
+use gpui::{AppContext as _, Context, Entity, EventEmitter, Subscription};
 use zapfast::backend::{Command, Event, Refusal, Unsent};
 use zapfast::model::{ChatId, MediaState, Message, ReplyTarget};
 
 use super::chats::ChatList;
 use super::conversation::Conversation;
 use super::session::{Me, Session};
+use super::settings::{AppSettings, SettingsEvent};
 
 /// Where commands go. The real one is the backend (see `bridge`); a demo's
 /// answers events through the same bridge.
@@ -86,13 +87,24 @@ pub struct Store {
     /// view (the account's setting; on until settings are read in this app).
     /// Stickers always do.
     pub auto_download: bool,
+    /// The reader's settings. The two switches above follow them.
+    pub settings: Entity<AppSettings>,
+    _settings: Subscription,
     /// Events applied, for tests and for the idle benchmark's accounting.
     pub applied: u64,
 }
 
 impl Store {
     pub fn new(sink: Rc<dyn CommandSink>, cx: &mut Context<Self>) -> Self {
+        let settings = cx.new(|_| AppSettings::in_memory());
+        let follow = cx.subscribe(&settings, |this, settings, _: &SettingsEvent, cx| {
+            let settings = settings.read(cx).get();
+            this.send_read_receipts = settings.send_read_receipts;
+            this.auto_download = settings.auto_download;
+        });
         Self {
+            settings,
+            _settings: follow,
             session: cx.new(|_| Session::default()),
             chats: cx.new(|_| ChatList::default()),
             conversations: HashMap::new(),
