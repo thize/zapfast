@@ -1,0 +1,59 @@
+[package]
+name = "gpui-chat-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Spike: a WhatsApp-like chat client on GPUI, to validate the port from egui"
+
+# Keeps this crate out of the root zapfast package.
+[workspace]
+
+[features]
+default = ["snapshot"]
+# Window::render_to_image only exists behind GPUI's test-support feature
+# (gpui-pre src/window.rs:3255), so --snapshot needs it in the normal build.
+snapshot = ["gpui/test-support", "gpui_platform/test-support"]
+
+[dependencies]
+# Mirrors gpui-component 0.11.0's own dependency on GPUI: the renamed
+# gpui-pre package, pinned to the same exact snapshot.
+gpui = { package = "gpui-pre", version = "=0.3.14" }
+# gpui-pre has no windowing backend of its own; this crate picks one per OS.
+# runtime_shaders compiles the Metal shaders at launch because this Mac has no
+# Metal toolchain (gpui-pre-apple build.rs:128-215 shells out to `xcrun metal`
+# otherwise).
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.14", features = ["font-kit", "runtime_shaders"] }
+gpui-component = "=0.11.0"
+unicode-segmentation = "1"
+# Decoding and generating pictures: PNG, JPEG, WebP (lossless encoder, animated
+# decoder) and GIF. The same 0.25 line GPUI's own `RenderImage` frames use, so
+# `image::Frame` is one type.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+# ZapFast's in-process Lottie rasterizer, with the root package's exact
+# declaration.
+rasterlottie = { version = "=0.2.4", default-features = false, features = ["images", "text"] }
+# Rasterizes ZapFast's logo for the tray icon, as its src/util.rs does (same
+# declaration as the root Cargo.toml).
+resvg = { version = "0.45", default-features = false }
+tempfile = "3"
+# Reads GPUI's own log lines (notification and accessibility outcomes are
+# only reported there).
+log = "0.4"
+# The wake-up channel from the tray's thread to GPUI's foreground executor.
+futures = "0.3"
+# ZapFast's platform crates, declared as the root Cargo.toml declares them.
+fastframe-tray = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1" }
+fastframe-dock = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1" }
+fastframe-notifications = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1" }
+
+[dev-dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.14", features = ["test-support"] }
+
+# GPUI is unusably slow unoptimized (text shaping, layout), which would make the
+# benchmarks measure the debug profile rather than the framework. Still the dev
+# profile (no --release): dependencies are optimized, this crate lightly.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
