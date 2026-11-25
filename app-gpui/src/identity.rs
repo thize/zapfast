@@ -108,6 +108,12 @@ impl Identity {
     }
 }
 
+/// The bundle identifier the platform knows the app by (notifications, the
+/// login item on macOS). Never ZapFast's `me.paolino.fastsapp`.
+pub fn bundle_id() -> String {
+    format!("me.paolino.{APP_ID}")
+}
+
 /// The keyring service of this app, never ZapFast's.
 pub fn keyring_service_name() -> String {
     format!("me.paolino.{APP_ID}")

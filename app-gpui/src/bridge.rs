@@ -120,19 +120,27 @@ impl Bridge {
     }
 
     /// A bridge with no worker behind it: events come from the returned
-    /// [`Injector`], commands go to `sink` (a recorder, or a demo's
-    /// responder that answers through the injector).
+    /// [`Injector`], commands go to `sink` (a recorder).
     pub fn detached(sink: Rc<dyn CommandSink>) -> (Self, Injector) {
+        Self::detached_with(|_| sink)
+    }
+
+    /// Like [`Bridge::detached`], for a sink that answers through the
+    /// injector (a demo's responder): `make_sink` is given it.
+    pub fn detached_with(
+        make_sink: impl FnOnce(Injector) -> Rc<dyn CommandSink>,
+    ) -> (Self, Injector) {
         let (wake, wakes) = unbounded();
         let (backend, events) = Backend::detached();
+        let injector = Injector { events, wake };
         (
             Self {
                 backend: Rc::new(RefCell::new(backend)),
-                sink,
+                sink: make_sink(injector.clone()),
                 wakes: Some(wakes),
                 startup: None,
             },
-            Injector { events, wake },
+            injector,
         )
     }
 
