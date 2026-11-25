@@ -222,4 +222,44 @@ mod tests {
         }
         assert_eq!(count(&stats), focused, "the caret made the list render");
     }
+
+    /// What Edit > Copy, Paste and Select All send reaches the composer.
+    #[gpui::test]
+    fn the_edit_menu_actions_work_in_the_composer(cx: &mut TestAppContext) {
+        use gpui_component::input;
+        cx.update(|cx| {
+            cx.set_global(ActivePalette(Palette::dark()));
+            gpui_component::init(cx);
+        });
+        let (scene, cx) = cx.add_window_view(|window, cx| {
+            ChatScene::new(generate(SEED, 20), Stats::new(), None, window, cx)
+        });
+        let state = scene.read_with(cx, |scene, cx| scene.composer.read(cx).state().clone());
+        cx.update(|window, cx| state.update(cx, |state, cx| state.focus(window, cx)));
+        cx.simulate_input("copiar isto");
+        cx.dispatch_action(input::SelectAll);
+        cx.dispatch_action(input::Copy);
+        assert_eq!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some("copiar isto")
+        );
+        cx.dispatch_action(input::Cut);
+        assert_eq!(
+            state.read_with(cx, |state, _| state.value().to_string()),
+            ""
+        );
+        cx.dispatch_action(input::Paste);
+        cx.dispatch_action(input::Paste);
+        assert_eq!(
+            state.read_with(cx, |state, _| state.value().to_string()),
+            "copiar istocopiar isto"
+        );
+        cx.dispatch_action(input::Undo);
+        assert_ne!(
+            state.read_with(cx, |state, _| state.value().to_string()),
+            "copiar istocopiar isto"
+        );
+    }
 }

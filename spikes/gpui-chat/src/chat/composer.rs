@@ -4,8 +4,8 @@
 use crate::ui::{icon, palette};
 use gpui::{
     AppContext as _, Context, CursorStyle, Entity, EventEmitter, InteractiveElement, IntoElement,
-    MouseButton, ParentElement, Render, StatefulInteractiveElement, Styled, Subscription, Window,
-    div, px,
+    MouseButton, ParentElement, Render, Role, StatefulInteractiveElement, Styled, Subscription,
+    Window, div, px,
 };
 use gpui_component::input::{InputEvent, Textarea, TextareaState};
 
@@ -76,9 +76,11 @@ impl Render for Composer {
         let p = palette(cx);
         let has_text = !self.state.read(cx).value().trim().is_empty();
         let state = self.state.clone();
-        let button = |id: &'static str, path: &'static str| {
+        let button = |id: &'static str, label: &'static str, path: &'static str| {
             div()
                 .id(id)
+                .role(Role::Button)
+                .aria_label(label)
                 .flex()
                 .flex_none()
                 .items_center()
@@ -100,9 +102,14 @@ impl Render for Composer {
             .bg(p.panel)
             .border_t_1()
             .border_color(p.outline)
-            .child(button("emoji", "icons/smile.svg"))
-            .child(button("attach", "icons/paperclip.svg"))
+            .child(button("emoji", "Emoji", "icons/smile.svg"))
+            .child(button("attach", "Anexar", "icons/paperclip.svg"))
             .child(
+                // No accessibility wrapper: gpui-component's Textarea already
+                // publishes a multi-line text input node (label taken from the
+                // placeholder, a text run, Focus and SetValue actions), as the
+                // `--a11y-dump` tree shows. A wrapper node of mine would only
+                // nest a second text input around it.
                 div()
                     .flex_1()
                     .min_w_0()
@@ -117,6 +124,11 @@ impl Render for Composer {
             .child(
                 button(
                     "send",
+                    if has_text {
+                        "Enviar mensagem"
+                    } else {
+                        "Gravar mensagem de voz"
+                    },
                     if has_text {
                         "icons/send.svg"
                     } else {

@@ -1,8 +1,8 @@
 # GPUI chat spike
 
-A WhatsApp-like chat client on GPUI in ZapFast's look, to test whether GPUI can carry the real port from egui. Standalone crate (empty `[workspace]`), not part of the root `zapfast` package. This is part 1 of 2: the Chat scene is complete; Media and Platform are placeholders (one module each under `src/scenes/`) for part 2.
+A WhatsApp-like chat client on GPUI in ZapFast's look, to test whether GPUI can carry the real port from egui. Standalone crate (empty `[workspace]`), not part of the root `zapfast` package. Three scenes: Chat (part 1), Media and Platform (part 2), plus an accessibility probe.
 
-Reused from ZapFast (never a WhatsApp asset): its Lucide icons (`assets/icons`, ISC), the wallpaper tile (`assets/wallpaper.svg`), the logo (`packaging/icons/zapfast.svg`), its color palette (`src/theme.rs`, light and dark, plus `wallpaper::doodle_ink`), and Inter. These are referenced by repository path (`include_bytes!("../../../assets/...")`), not copied. Only what ZapFast takes from its `fastframe-icons` and `fastframe-fonts` dependencies is copied here, with its licenses: seven Lucide icons (search, mic, ellipsis, plus, check, x, chevron-down) and `InterVariable.ttf`.
+Reused from ZapFast (never a WhatsApp asset): its Lucide icons (`assets/icons`, ISC), the wallpaper tile (`assets/wallpaper.svg`), the logo (`packaging/icons/zapfast.svg`), the demo pictures and the animated WebP sticker (`assets/demo`, CC0 or public domain, see its SOURCES.md), its tray icon rendering (`src/util.rs`, copied into `src/platform/icon.rs`), its color palette (`src/theme.rs`, light and dark, plus `wallpaper::doodle_ink`), and Inter. These are referenced by repository path (`include_bytes!("../../../assets/...")`), not copied. Only what ZapFast takes from its `fastframe-icons` and `fastframe-fonts` dependencies is copied here, with its licenses: seven Lucide icons (search, mic, ellipsis, plus, check, x, chevron-down) and `InterVariable.ttf`.
 
 ## Run
 
@@ -10,6 +10,7 @@ Reused from ZapFast (never a WhatsApp asset): its Lucide icons (`assets/icons`, 
 cargo run                      # Chat scene, interactive (opens 1200x800)
 cargo test
 cargo clippy --all-targets -- -D warnings
+cargo build && scripts/bundle-macos.sh   # a signed .app, for notifications
 ```
 
 Scenes: Chat, Media, Platform. Switch with Cmd+1..3 (Ctrl on other OSes) or the segmented control in the sidebar header. Light and dark follow the OS.
@@ -22,12 +23,41 @@ Keys: Cmd+J cycles messages 2500, 5000, 7500 (placed exactly at the top, brief h
 | --- | --- |
 | `--scene chat\|media\|platform` | Scene shown at start. |
 | `--bench idle --seconds N` | Prints `BENCH idle renders=<renders of the conversation view during the last N-2 s> seconds=N`, quits. Renders within 300 ms of the window gaining or losing focus are not counted: GPUI redraws every view then, which is the user's doing, not idle repainting. |
+| `--bench video --seconds N` | Runs the Media scene's synthetic call video alone (640x360, 30 fps, a new image per frame). Prints `BENCH video frames=<n> fps=<x> p95_ms=<y>`: frames painted after the first second, their rate over the time until the end, and the 95th percentile of each frame's cost from `render` to the end of its `paint` (the atlas upload happens inside it). Stderr has the average, the gaps between painted frames, the background generation time, the frames made but never painted, resident memory and the window's visibility. |
 | `--bench scroll --seconds N` | Scrolls from the last row to the first at a constant rate in rows per second (after 1.5 s of warm-up); prints `BENCH scroll frames=.. p50_ms=.. p95_ms=.. max_ms=..` and quits. Stderr gets the CPU cost per frame (render to paint) and, when the gaps look throttled, a `BENCH note=` line. |
-| `--snapshot DIR` | Saves `chat.png`, `chat-selection.png` (a selection across five bubbles), `media.png`, `platform.png` via `Window::render_to_image`, which GPUI only compiles with its `test-support` feature (the default `snapshot` feature here). |
+| `--snapshot DIR` | Saves `chat.png`, `chat-selection.png` (a selection across five bubbles), `media.png`, `media-2.png`, `media-3.png` (the Media column scrolled by 0, 900 and 1800 px), `platform.png` via `Window::render_to_image`, which GPUI only compiles with its `test-support` feature (the default `snapshot` feature here). |
 | `--jump N` | Opens with message N at the top (handy with `--snapshot`). |
 | `--appearance light\|dark` | Forces a palette instead of following the OS. |
+| `--probe notify-gpui\|notify-fastframe` | Posts a test notification through one API, waits 6 s and prints `PROBE notify ...` lines (what each one reported), then quits. |
+| `--probe badge` | A regular (Dock-visible) but never activated app puts 3 on its Dock tile for 10 s, prints `PROBE badge count=3`, clears it, quits. |
+| `--a11y-dump FILE` | While any accessibility client is attached, writes GPUI's accessibility tree (`Window::debug_a11y_tree_json`) to FILE after each render. |
 
-`PID <pid>` is printed at startup; stdout carries nothing else besides the BENCH/SNAPSHOT lines. `ZAPFAST_SPIKE_TRACE=1` prints render timestamps for the idle bench.
+`PID <pid>` is printed at startup; stdout carries nothing else besides the BENCH/SNAPSHOT/PROBE lines. `ZAPFAST_SPIKE_TRACE=1` prints render timestamps (idle) and painted video frames (video). `ZAPFAST_SPIKE_LOG=1` prints GPUI's `log` lines (notification and accessibility outcomes appear only there).
+
+### Media scene
+
+WhatsApp-style bubbles over the chat wallpaper, in a scrolling column. Everything that moves lives in its own cached view, so an animation re-renders only itself.
+
+- **Static**: PNG (960x540), JPEG (540x960 portrait) and lossless WebP (600x600), all generated at runtime into a temp dir with the `image` crate on a background thread, plus two real pictures from `assets/demo/photos` (landscape and a 900x1200 portrait). Bubbles are 300 px wide, as tall as the aspect ratio says between 120 and 340 px, with `ObjectFit::Cover` and rounded corners (`bubble_size`).
+- **GIF**: generated at runtime (200x200, 16 frames of 70 ms, `image`'s GIF encoder), written to the temp dir and shown with `img(path)`: GPUI decodes it and steps the frames itself.
+- **Animated WebP**: `assets/demo/stickers/astronaut-float.webp` (ZapFast's fixture: 16 frames of 100 ms), shown with `img("demo/stickers/...")`. There is no animated-WebP encoder in `image` (its WebP encoder is lossless and still-only), so none is generated.
+- **Lottie sticker**: ZapFast has no Lottie fixture in the repository (`src/lottie.rs`'s tests build `.was` archives around an empty animation), so `src/media/lottie.rs` holds a hand-written one (a bouncing, squashing ball and its shadow, 128x128, 60 frames at 30 fps). It is rendered with `rasterlottie` =0.2.4 with ZapFast's feature set on a background thread (60 frames at 2x), converted to straight-alpha BGRA, and played by a timer at the animation's own rate that advances a frame index only when it changes; `Window::paint_image` selects the frame.
+- **Synthetic call video**: 640x360 BGRA frames made on a background thread (a scrolling hue gradient, a bouncing box, the frame number), pushed every 1/30 s as a new `RenderImage`; the previous one is released from the GPU atlas with `App::drop_image`. The tile shows its measured fps and the average render-to-paint time.
+
+A scene that is not shown runs nothing: `MediaScene::set_active(false)` drops the timers and the video's image, and the shell also deactivates it while the window is covered or minimized (`Window::observe_window_visibility`). Tests: no timer survives `set_active(false)`; the video pushes new images and releases them.
+
+### Platform scene
+
+- **Tray and Dock badge** (`src/platform/tray.rs`): `fastframe-tray` and `fastframe-dock`, declared as the root `Cargo.toml` does, with ZapFast's logo as the icon and as the macOS template image. Menu: Abrir ZapFast, Sair. Buttons: +1 / zerar contador (Dock tile and tooltip). The tray's `wake` function pushes one `()` into a futures channel that a GPUI foreground task awaits: no timer, no polling (`fastframe_tray::idle` is for windowless apps and is not needed). The item is made with `create_item()`, not `attach()`, because `attach()` activates the app.
+- **Notifications** (`src/platform/notify.rs`): the Notificar (GPUI) button uses `App::show_system_notification`; Notificar (fastframe) uses `fastframe-notifications` (permission request, then `show_with` and its events).
+- **Menu bar** (`src/platform/menus.rs`): application menu (Services, Quit, Cmd+Q), Editar (Desfazer, Refazer, Recortar, Copiar, Colar, Selecionar tudo as `OsAction`s sending gpui-component's `input::*` actions, which the composer handles and the message list answers for Copy and Select All) and Visualizar (the three scenes).
+- **Accessibility**: see the findings below; the scene has a button that copies the tree.
+
+### Accessibility probe
+
+gpui-pre 0.3.14 has a real accessibility layer on AccessKit (`src/_accessibility.rs`, `src/window/a11y.rs`): `div().id(..).role(Role::..)`, `aria_label`, `aria_description`, `aria_selected`, `aria_position_in_set`/`size_of_set`, `aria_value`, `on_a11y_action`, `a11y_synthetic_children`, and `Window::is_a11y_active` / `debug_a11y_tree_json`. The tree is built only while an assistive technology has asked for it. The spike gives roles and labels to: scene tabs (`TabList`, `Tab`, selected), chat list (`List` of `ListItem`s, `Ana, 08:41, 3 mensagens não lidas: ...`, position in set), the message list (`List`, each message a `ListItem` labelled `Ada, 10:41: text`, with reactions, quote and delivery state as the description, position `n of 10,000`), day separators (`Heading`), the buttons, and the Media/Platform scenes.
+
+Checked against the real macOS accessibility API (what VoiceOver reads), with System Events while the app ran: the tab list is an `AXTabGroup "Cenas"` of `AXRadioButton`s with the selected state in `AXValue`; the chat list is an `AXList "Conversas"` of `AXGroup`s whose `AXTitle` is the label; the message list is an `AXList "Mensagens de Família Souza"` with one `AXGroup` per message, `AXTitle` `Você, 23:34: Alguém pode confirmar...` and `AXHelp` the description; the composer is an `AXTextArea` (title and placeholder `Digite uma mensagem`); buttons are `AXButton`s with their labels. This is not VoiceOver itself: nobody listened to it (see the checklist).
 
 ### Background mode
 
@@ -45,9 +75,18 @@ BENCH scroll frames=241 p50_ms=33.37 p95_ms=36.41 max_ms=43.82
 frame CPU cost (render to paint): p50=7.85 ms p95=11.67 ms max=14.95 ms   (stderr)
 ```
 
+```
+BENCH idle renders=0 seconds=8            # tray item and Dock badge code active; CPU time did not move over 8 s
+BENCH video frames=210 fps=30.0 p95_ms=2.31
+BENCH video frames=210 fps=30.1 p95_ms=2.53
+BENCH video frames=870 fps=30.0 p95_ms=2.36   # 30 s; resident memory 132 MB at the end, 149 MB after 3 s: no growth
+```
+
+The video's stderr detail: render-to-paint average 1.8 ms, gaps between painted frames p50 33.3 ms / p95 35 ms, background generation of a frame about 1 to 2 ms, no frame made and not painted. `idle renders` counts renders of any view plus the tile timers' ticks, so a hidden scene that kept animating would show up. Two earlier video runs, made while another project was building on the same Mac, gave 74 frames (10.6 fps, 120 frames never painted) and 0 frames: GPUI paints nothing for a window the platform reports `Hidden`, and a loaded machine starves the 30 Hz background pacing; the bench prints the window's visibility to make that visible.
+
 The scroll bench jumps about 20 rows per frame (10,400 rows in 8 s), so nearly every frame lays out a whole new screen from cold; 8 ms p50 and 15 ms max for that is the worst case, not a typical wheel scroll.
 
-`cargo test`: 56 tests (selection model 15, markup 6, data 6, copy format 5, bench plumbing 4, selectable segments 4, time 2, ui 2, assets 1, palette 1, and 10 GPUI tests that build the real views headless: row virtualization, jumping, sending, selection by simulated mouse events including double/triple/shift click and edge auto-scroll, clipboard format through the real action, Enter vs Shift+Enter in the composer, and "idle never re-renders").
+`cargo test`: 81 tests (part 1's 56, plus 25: media 9 (bubble sizes, BGRA conversion, generated formats read back, video frames, Lottie renders 60 distinct frames, video statistics, rate meter), platform 8 (tray actions and menu, tooltip, icon rasterization, menu structure, notification errors), accessibility labels 2, and 6 GPUI view tests: no timer survives hiding the Media scene, the video pushes and releases images, Edit menu actions in the message list and in the composer, the Platform scene counts the badge and renders). Part 1's: selection model 15, markup 6, data 6, copy format 5, bench plumbing 4, selectable segments 4, time 2, ui 2, assets 1, palette 1, and 10 GPUI tests that build the real views headless: row virtualization, jumping, sending, selection by simulated mouse events including double/triple/shift click and edge auto-scroll, clipboard format through the real action, Enter vs Shift+Enter in the composer, and "idle never re-renders").
 
 ## Findings
 
@@ -73,11 +112,24 @@ Limitations and bugs, with evidence (registry paths under `gpui-pre-0.3.14/src`,
 10. **Metal**: `gpui-pre-apple/build.rs:128-215` shells out to `xcrun metal`; without the toolchain only `runtime_shaders` builds (shaders compile at launch).
 11. gpui-component's `Root` is required as the window root; its icons and assets are not used (the spike ships its own `AssetSource`).
 
-Not done: VoiceOver (see checklist), a scrollbar (limitation 2), message search, real media, an emoji picker beyond the OS one, Windows/Linux builds (nothing platform-specific was written, but only macOS was run).
+Part 2 (Media, Platform, accessibility), with evidence:
+
+12. **`img()` animates GIF and animated WebP, but only in the active window, and re-renders its view every frame.** `elements/img.rs:317-336` advances `frame_index` only `if window.is_window_active()` and calls `window.request_animation_frame()` (`:373-380`), which notifies the view being rendered (`window.rs:3096`): the animation is paced by the display, not by the frame delays (a 100 ms WebP still repaints its view at refresh rate), and an unfocused window shows frame 0. In the unfocused snapshot the GIF and WebP tiles read 2 renders/s and stay still. Not measured with a focused window (automated runs never take focus). Per-tile cached views (as here) keep that repainting off the rest of the scene. GPUI decodes animated WebP itself (`decode_webp_image`, `platform.rs:3515`).
+13. **Pixel format**: `RenderImage` frames are BGRA with straight alpha (`platform.rs:3455`; Metal blends with `SourceAlpha`, `metal_renderer.rs:1439`), while `rasterlottie` returns premultiplied RGBA, so Lottie frames need a swap and a division by alpha (`media/frames.rs`). The frame count and delays of a multi-frame `RenderImage` are public; `Window::paint_image` takes a frame index, which is what a timer-driven player needs.
+14. **A new `RenderImage` per video frame works, if the old one is released.** Every `RenderImage` gets a new id and its own atlas tile; without `App::drop_image` a 640x360 stream would add about 0.9 MB per frame. With it, resident memory stays flat (132 MB after 30 s). Measured on this Mac in an optimized dev build: 30.0 fps, p95 2.3 to 2.5 ms from render to the end of paint. GPUI also has `Window::paint_surface` / `surface()` (macOS `CVPixelBuffer`), the natural path for a real decoder; not benchmarked.
+15. **Nothing is painted for a `Hidden` window.** The platform stops requesting frames for a window it reports covered, minimized, on another Space or on a sleeping display (`WindowVisibility`, `platform.rs:84-118`); timers must follow `observe_window_visibility` (the shell does) and a benchmark must report the visibility (the video bench does).
+16. **Tray**: `fastframe-tray` works with GPUI's run loop with no polling: `Tray::spawn(config, wake)`, `create_item()` on the main thread after launch (the item is a real `NSStatusItem`: System Events lists one menu-bar extra, `status menu`), `events()` drained when `wake` fires. `Tray::attach()` activates the app, so it is not used. The tray crate's `Dock` reopen handler is added to GPUI's application delegate by `class_addMethod`; a Dock click is not tested. The tray's menu items could not be read back through the accessibility API (System Events found no menu under the item), and nobody clicked them: **Abrir** / **Sair** are covered only by the mapping test.
+17. **Dock badge**: `fastframe_dock::Badge::set(3)` shows 3 on the Dock tile (read back from the Dock's accessibility tree: `AXStatusLabel` = 3) and clears at 0. It needs a regular (not Accessory) app; the other runs are Accessory and have no Dock tile.
+18. **Native notifications need a signed `.app` on macOS, and the two APIs do not coexist.** Unbundled, GPUI logs `system notifications disabled: not running from an app bundle` and does nothing (`system_notifications.rs`), and fastframe returns `BundleRequired`. In an ad-hoc signed bundle (`scripts/bundle-macos.sh`, `dev.zapfast.gpui-spike`): GPUI's `show_system_notification` reaches `requestAuthorization`, which failed here with `Notifications are not allowed for this application` (logged only: the API returns nothing), so no banner was seen and delivery is **not demonstrated**; fastframe returns `Unsupported` because `gpui_component::init` has already registered GPUI's response handler (`gpui-component notification.rs:588`), which installs GPUI's `UNUserNotificationCenter` delegate, and fastframe refuses to share it (`fastframe-notifications macos.rs:310-324`). Either API alone is workable; with gpui-component, GPUI's is the one that is not locked out, but its response callback belongs to gpui-component (clicks on app-posted notifications are ignored there), so the app cannot learn that a notification was clicked without replacing gpui-component's handler. Whether a notification appears with a Developer ID signature is untested.
+19. **The Edit menu works through GPUI's `OsAction`**: the menu bar is set with `cx.set_menus`; System Events lists Editar with all six items, enabled by `is_action_available` (the OS also adds Writing Tools, AutoFill, Dictation and Emoji & Symbols). The items send gpui-component's `input::Copy` / `Paste` / `SelectAll`, which the composer handles (tested through `dispatch_action`); the message list answers Copy and Select All. Shortcuts are not shown in the menu: GPUI looks bindings up without their key context and these are bound in `Input` / `Conversation`; the keys still work through the keymap. The real Cmd+V and Cmd+C key presses were not typed by anyone.
+20. **Accessibility**: the GPUI layer is usable and the tree reaches macOS (see the probe above). Gaps found: (a) plain text children are not nodes (only `text!`-built `Text` elements and elements with an id and a role are), so every row has to carry its own label; (b) `ListItem` reaches macOS as an unspecific `AXGroup`; (c) `aria_position_in_set` / `size_of_set` do not show up through System Events (unknown whether VoiceOver uses them); (d) the list is virtualized, so only the rows `list()` lays out (3 messages plus their overdraw at the bottom, 36 nodes in all) exist in the tree: there is no accessible scroll action on the list and a screen-reader user cannot reach older messages without the scroll wheel or keyboard scrolling; (e) gpui-component's `Textarea` already publishes a `MultilineTextInput` with the placeholder as its label, a `TextRun` and `Focus` / `SetValue` actions (the label cannot be set from `Textarea`'s public API); my first wrapper node was removed as redundant; (f) `SelectableText` (a `StyledText`) exposes nothing, so the message text is read from the row's label, not from the text itself, and the selection is invisible to assistive technology; (g) the accessibility tree is built only when a client asks, and System Events asks, so `--a11y-dump` works without VoiceOver; VoiceOver itself was not run.
+21. **GPUI's test platform panics on `App::app_path`** (`platform/test/platform.rs:772`, `unimplemented!()`), so a view that calls it cannot be tested; `platform::is_bundled` reads the executable path instead.
+
+Not done: VoiceOver (see checklist), delivery of a native notification (finding 18), a click on the tray menu, the Dock-reopen click, a focused-window measurement of `img()`'s repaint rate, animated WebP generation (no encoder), Windows and Linux (the platform code is `cfg`-clean only for macOS here), , a scrollbar (limitation 2), message search, an emoji picker beyond the OS one, Windows/Linux builds (nothing platform-specific was written, but only macOS was run).
 
 ## Dependencies
 
-`gpui-pre` 0.3.14 (renamed `gpui`) and `gpui-pre-platform` 0.3.14 with `font-kit` and `runtime_shaders`, `gpui-component` 0.11.0, `unicode-segmentation` 1; all GPUI crates exact-pinned with `=`. Rust 1.98.0 (the repository's pin) builds it; no toolchain override was needed.
+`gpui-pre` 0.3.14 (renamed `gpui`) and `gpui-pre-platform` 0.3.14 with `font-kit` and `runtime_shaders`, `gpui-component` 0.11.0, `unicode-segmentation` 1; all GPUI crates exact-pinned with `=`. Part 2 adds `image` 0.25 (png, jpeg, webp, gif), `rasterlottie` =0.2.4 (ZapFast's declaration), `resvg` 0.45 (ZapFast's), `fastframe-tray`, `fastframe-dock` and `fastframe-notifications` (ZapFast's `tag = "v0.17.1"` declarations, unchanged), `futures`, `log` and `tempfile`. Rust 1.98.0 (the repository's pin) builds it; no toolchain override was needed.
 
 ## Manual checklist (macOS)
 
@@ -89,6 +141,11 @@ Not done: VoiceOver (see checklist), a scrollbar (limitation 2), message search,
 - [ ] Drag-select from inside one bubble across many, with auto-scroll at the edges; shift-click, double-click word, triple-click bubble, Esc, Cmd+C; the pasted result is `[HH:MM, D/M/YYYY] Name: text` per message (plain text inside one message).
 - [ ] The composer grows to six lines then scrolls; Enter sends and the list jumps to the bottom; the scroll-to-bottom button appears and works.
 - [ ] Cmd+J cycles 2500, 5000, 7500 with each message exactly at the top.
-- [ ] VoiceOver reads the list and the composer (not verified; message text is exposed to the accessibility tree only as far as GPUI's `StyledText` allows).
+- [ ] VoiceOver (Cmd+F5) reads the chat list, a message (`Ada, 10:41: text`), the composer and the scene tabs; a new message sent from the composer is announced; the list can be scrolled to older messages with the keyboard.
+- [ ] Menu-bar icon (run `cargo run -- --scene platform`): it shows ZapFast's logo; the menu has Abrir ZapFast and Sair; Abrir brings the window forward from another app; Sair quits; closing and reopening the window from the Dock works.
+- [ ] Dock badge: +1 shows 1, 2, 3 on the Dock icon; Zerar clears it; the tooltip of the menu-bar icon follows.
+- [ ] Notification: run `scripts/bundle-macos.sh`, open the `.app`, press both buttons in the Platform scene, allow notifications when macOS asks; a banner appears; its Abrir button and a click on its body return to the window.
+- [ ] Menu bar: Editar > Copiar, Colar, Selecionar tudo in the composer (type, select, copy, paste), and Copiar / Selecionar tudo with the message list focused (click a message, then Cmd+A, Cmd+C; paste in the composer); Cmd+Z undoes.
+- [ ] Media scene: the GIF and the animated WebP move while the window is focused and stop in the background; the Lottie ball bounces smoothly at 30 fps; the video counter runs without hitches; switching to Chat stops all of them (Activity Monitor CPU back near 0).
 - [ ] Leave the window idle, focused and unfocused: Activity Monitor CPU stays near 0 and the caret stops blinking after a few seconds.
 - [ ] Switch macOS between light and dark: the app follows without restarting.

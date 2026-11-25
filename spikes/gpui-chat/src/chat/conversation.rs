@@ -13,10 +13,11 @@ use crate::ui::{icon, name_color, palette};
 use gpui::{
     AnyElement, App, ClipboardItem, Context, CursorStyle, DispatchPhase, FocusHandle, Focusable,
     InteractiveElement, IntoElement, ListAlignment, ListOffset, ListState, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render, Role,
     SharedString, StatefulInteractiveElement, Styled, Task, WeakEntity, Window, actions, canvas,
     div, list, point, prelude::FluentBuilder, px, relative, svg,
 };
+use gpui_component::input;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -328,11 +329,31 @@ impl ConversationView {
         }
     }
 
+    /// Selects every message, first character to last (Edit > Select All, and
+    /// Cmd+A while the list has focus).
+    fn select_all(&mut self, cx: &mut Context<Self>) {
+        let Some(last) = self.convo.messages.len().checked_sub(1) else {
+            return;
+        };
+        let end = self.convo.messages[last].text().len();
+        self.selection = Some(Selection::new(Pos::new(0, 0), Pos::new(last, end)));
+        cx.notify();
+    }
+
     // ----- rows --------------------------------------------------------------
 
     fn render_row(&mut self, ix: usize, palette: Palette) -> AnyElement {
         match self.convo.rows[ix] {
-            Row::Day(day) => pill(timefmt::long_date(day), palette).into_any_element(),
+            Row::Day(day) => {
+                let label = timefmt::long_date(day);
+                div()
+                    .id(("day", ix))
+                    .role(Role::Heading)
+                    .aria_level(2)
+                    .aria_label(label.clone())
+                    .child(pill(label, palette))
+                    .into_any_element()
+            }
             Row::Unread(count) => {
                 let label = if count == 1 {
                     "1 mensagem não lida".to_owned()
@@ -340,6 +361,9 @@ impl ConversationView {
                     format!("{count} mensagens não lidas")
                 };
                 div()
+                    .id(("unread", ix))
+                    .role(Role::Label)
+                    .aria_label(label.clone())
                     .w_full()
                     .flex()
                     .justify_center()
@@ -506,8 +530,21 @@ impl ConversationView {
             );
         }
 
-        div()
-            .w_full()
+        // The row is one accessibility node: its label carries the sender, the
+        // time and the text (the text itself is a custom `StyledText` element,
+        // which exposes nothing), and the description what surrounds it.
+        let label = message_label(&message.sender, message.timestamp, message.text());
+        let description = message_description(message);
+        let mut row = div()
+            .id(("message", index))
+            .role(Role::ListItem)
+            .aria_label(label)
+            .aria_position_in_set(index + 1)
+            .aria_size_of_set(self.convo.messages.len());
+        if let Some(description) = description {
+            row = row.aria_description(description);
+        }
+        row.w_full()
             .flex()
             .px(px(14.))
             .py(px(2.))
@@ -552,6 +589,45 @@ impl ConversationView {
     }
 }
 
+/// What a screen reader says for a message: `Ada, 10:41: the text`.
+pub fn message_label(sender: &str, timestamp: i64, text: &str) -> String {
+    format!("{sender}, {}: {text}", timefmt::clock(timestamp))
+}
+
+/// The supporting detail read after the label: the message it answers,
+/// reactions, and for outgoing messages whether it was delivered or read.
+pub fn message_description(message: &Message) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(quote) = &message.quote {
+        parts.push(format!("Em resposta a {}: {}", quote.sender, quote.text));
+    }
+    if !message.reactions.is_empty() {
+        let reactions: Vec<String> = message
+            .reactions
+            .iter()
+            .map(|r| {
+                if r.count > 1 {
+                    format!("{} {}", r.emoji, r.count)
+                } else {
+                    r.emoji.to_owned()
+                }
+            })
+            .collect();
+        parts.push(format!("Reações: {}", reactions.join(", ")));
+    }
+    if message.outgoing {
+        parts.push(
+            match message.delivery {
+                Delivery::Sent => "Enviada",
+                Delivery::Delivered => "Entregue",
+                Delivery::Read => "Lida",
+            }
+            .to_owned(),
+        );
+    }
+    (!parts.is_empty()).then(|| parts.join(". "))
+}
+
 fn pill(label: String, palette: Palette) -> impl IntoElement {
     div().w_full().flex().justify_center().py(px(8.)).child(
         div()
@@ -566,7 +642,7 @@ fn pill(label: String, palette: Palette) -> impl IntoElement {
 }
 
 /// Wallpaper tiles, in the doodle tint, behind the list.
-fn wallpaper(palette: Palette) -> impl IntoElement {
+pub fn wallpaper(palette: Palette) -> impl IntoElement {
     let (width, height) = WALLPAPER_TILE;
     div()
         .absolute()
@@ -640,9 +716,16 @@ impl Render for ConversationView {
 
         div()
             .id("conversation")
+            .role(Role::List)
+            .aria_label(format!("Mensagens de {}", crate::scenes::chat::CHAT_TITLE))
             .key_context("Conversation")
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &CopySelection, _, cx| this.copy(cx)))
+            // Edit > Copy and Select All send gpui-component's input actions,
+            // the ones the composer handles; the message selection answers
+            // them too when the list has focus.
+            .on_action(cx.listener(|this, _: &input::Copy, _, cx| this.copy(cx)))
+            .on_action(cx.listener(|this, _: &input::SelectAll, _, cx| this.select_all(cx)))
             .on_action(cx.listener(|this, _: &ClearSelection, _, cx| {
                 this.selection = None;
                 cx.notify();
@@ -666,6 +749,8 @@ impl Render for ConversationView {
                 root.child(
                     div()
                         .id("scroll-to-bottom")
+                        .role(Role::Button)
+                        .aria_label("Ir para a última mensagem")
                         .absolute()
                         .right(px(18.))
                         .bottom(px(14.))
@@ -979,6 +1064,56 @@ mod tests {
         // Esc clears the selection.
         cx.dispatch_action(ClearSelection);
         assert!(view.read_with(cx, |view, _| view.selection.is_none()));
+    }
+
+    /// Edit > Select All and Edit > Copy send gpui-component's input actions;
+    /// with the list focused they act on the message selection.
+    #[gpui::test]
+    fn the_edit_menu_actions_select_and_copy_messages(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx, 40);
+        cx.update(|window, cx| {
+            let focus = view.read(cx).focus.clone();
+            window.focus(&focus, cx);
+        });
+        cx.dispatch_action(input::SelectAll);
+        let selection = view
+            .read_with(cx, |view, _| view.selection)
+            .expect("Select All selects");
+        let last = view.read_with(cx, |view, _| view.message_count() - 1);
+        assert_eq!(selection.ordered().0, Pos::new(0, 0));
+        assert_eq!(selection.ordered().1.msg, last);
+        cx.dispatch_action(input::Copy);
+        let copied = cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .expect("Copy puts text on the clipboard");
+        assert_eq!(copied.lines().filter(|l| l.starts_with('[')).count(), 40);
+    }
+
+    #[test]
+    fn screen_readers_get_sender_time_and_text() {
+        let message = Message::new(false, "Ada", 1_700_000_000, "bom dia".into());
+        let label = message_label(&message.sender, message.timestamp, message.text());
+        assert!(label.starts_with("Ada, "), "{label}");
+        assert!(label.ends_with(": bom dia"), "{label}");
+        // `Ada, HH:MM: text`
+        assert_eq!(label.matches(':').count(), 2, "{label}");
+        assert_eq!(message_description(&message), None);
+
+        let mut mine = Message::new(true, "Você", 1_700_000_100, "ok".into());
+        mine.delivery = Delivery::Read;
+        mine.quote = Some(crate::data::Quote {
+            sender: "Ada".into(),
+            text: "bom dia".into(),
+        });
+        mine.reactions.push(crate::data::Reaction {
+            emoji: "👍",
+            count: 2,
+        });
+        assert_eq!(
+            message_description(&mine).as_deref(),
+            Some("Em resposta a Ada: bom dia. Reações: 👍 2. Lida")
+        );
     }
 
     #[gpui::test]

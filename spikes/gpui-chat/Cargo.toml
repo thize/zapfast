@@ -25,6 +25,26 @@ gpui = { package = "gpui-pre", version = "=0.3.14" }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.14", features = ["font-kit", "runtime_shaders"] }
 gpui-component = "=0.11.0"
 unicode-segmentation = "1"
+# Decoding and generating pictures: PNG, JPEG, WebP (lossless encoder, animated
+# decoder) and GIF. The same 0.25 line GPUI's own `RenderImage` frames use, so
+# `image::Frame` is one type.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+# ZapFast's in-process Lottie rasterizer, with the root package's exact
+# declaration.
+rasterlottie = { version = "=0.2.4", default-features = false, features = ["images", "text"] }
+# Rasterizes ZapFast's logo for the tray icon, as its src/util.rs does (same
+# declaration as the root Cargo.toml).
+resvg = { version = "0.45", default-features = false }
+tempfile = "3"
+# Reads GPUI's own log lines (notification and accessibility outcomes are
+# only reported there).
+log = "0.4"
+# The wake-up channel from the tray's thread to GPUI's foreground executor.
+futures = "0.3"
+# ZapFast's platform crates, declared as the root Cargo.toml declares them.
+fastframe-tray = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1" }
+fastframe-dock = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1" }
+fastframe-notifications = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1" }
 
 [dev-dependencies]
 gpui = { package = "gpui-pre", version = "=0.3.14", features = ["test-support"] }

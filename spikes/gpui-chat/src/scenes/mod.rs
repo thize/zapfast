@@ -1,5 +1,6 @@
-//! One module per scene. `chat` is complete; `media` and `platform` are
-//! placeholders for part 2 of the spike.
+//! One module per scene: `chat` (the conversation), `media` (pictures,
+//! animations, a Lottie sticker, a synthetic call video) and `platform`
+//! (tray, Dock badge, notifications, menu bar, accessibility).
 
 pub mod chat;
 pub mod media;

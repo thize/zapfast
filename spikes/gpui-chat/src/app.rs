@@ -1,8 +1,9 @@
 //! Boots GPUI, opens the window, and runs the automated modes.
 
 use crate::assets::{Assets, INTER};
-use crate::bench::{BenchKind, Cli, SceneKind, idle_line};
+use crate::bench::{BenchKind, Cli, NotifyBackend, SceneKind, idle_line};
 use crate::chat::conversation::{ClearSelection, CopySelection, JumpNext};
+use crate::media::video;
 use crate::palette::Palette;
 use crate::selection::{Pos, Selection};
 use crate::shell::{Shell, ShowChat, ShowMedia, ShowPlatform, apply_theme};
@@ -49,6 +50,8 @@ fn boot(cli: Cli, cx: &mut App) {
     cx.set_global(ActivePalette(palette));
     apply_theme(palette, cx);
 
+    // The native menu bar (Edit menu included) and Cmd+Q.
+    crate::platform::menus::install(cx);
     cx.bind_keys([
         // The secondary modifier is Cmd on macOS and Ctrl elsewhere.
         KeyBinding::new(secondary!("c"), CopySelection, Some("Conversation")),
@@ -62,10 +65,17 @@ fn boot(cli: Cli, cx: &mut App) {
     // Automated runs (--bench, --snapshot) never take focus from the user:
     // an Accessory app has no Dock icon and is never activated, and the window
     // opens unfocused in the bottom-right corner of the screen.
-    let background = cli.bench.is_some() || cli.snapshot.is_some();
+    let background = cli.bench.is_some()
+        || cli.snapshot.is_some()
+        || cli.probe_notify.is_some()
+        || cli.probe_badge;
     let window_size = size(px(1200.), px(800.));
     let bounds = if background {
-        cx.set_activation_policy(ActivationPolicy::Accessory);
+        // The badge probe needs a Dock tile, so it stays a regular app (never
+        // activated, window unfocused).
+        if !cli.probe_badge {
+            cx.set_activation_policy(ActivationPolicy::Accessory);
+        }
         match cx.primary_display() {
             Some(display) => {
                 let screen = display.bounds();
@@ -106,9 +116,116 @@ fn boot(cli: Cli, cx: &mut App) {
 
     match (&cli.bench, &cli.snapshot) {
         (Some((BenchKind::Idle, seconds)), _) => idle_bench(window, *seconds, started, cx),
+        (Some((BenchKind::Video, seconds)), _) => video_bench(window, *seconds, started, cx),
         (_, Some(dir)) => snapshot(window, dir.clone(), cx),
+        _ if cli.probe_badge => badge_probe(window, cx),
+        _ if cli.probe_notify.is_some() => {
+            notify_probe(window, cli.probe_notify.expect("checked"), cx)
+        }
         _ => {}
     }
+}
+
+/// Runs the Media scene's call video alone for `seconds`, then prints how many
+/// frames were painted, at what rate, and what each cost.
+fn video_bench(
+    window: WindowHandle<gpui_component::Root>,
+    seconds: u64,
+    started: Instant,
+    cx: &mut App,
+) {
+    let shell = shell_of(window, cx);
+    let stats = shell.read(cx).media().read(cx).video_stats();
+    cx.spawn(async move |cx| {
+        let end = started + Duration::from_secs(seconds);
+        cx.background_executor()
+            .timer(end.saturating_duration_since(Instant::now()))
+            .await;
+        // The first second warms the atlas and the pipeline up.
+        if std::env::var_os("ZAPFAST_SPIKE_TRACE").is_some() {
+            eprintln!("painted video frames (s): {:.2?}", stats.offsets(started));
+        }
+        let summary = stats.summary(started + Duration::from_secs(1), end);
+        println!("{}", video::bench_line(&summary));
+        eprintln!("{}", video::bench_detail(&summary));
+        eprintln!("resident memory at the end: {}", resident_memory());
+        let visibility = cx.update(|cx| {
+            window
+                .update(cx, |_, window, _| format!("{:?}", window.visibility()))
+                .unwrap_or_default()
+        });
+        eprintln!("window visibility at the end: {visibility}");
+        cx.update(|cx| cx.quit());
+    })
+    .detach();
+}
+
+/// The process's resident set size, from `ps` (for the video's leak check).
+fn resident_memory() -> String {
+    std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+        .output()
+        .ok()
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .and_then(|text| text.trim().parse::<u64>().ok())
+        .map_or_else(
+            || "unknown".into(),
+            |kib| format!("{:.0} MB", kib as f64 / 1024.0),
+        )
+}
+
+/// Puts 3 on the Dock tile for ten seconds (so a Dock query can read it).
+fn badge_probe(window: WindowHandle<gpui_component::Root>, cx: &mut App) {
+    let shell = shell_of(window, cx);
+    cx.spawn(async move |cx| {
+        cx.background_executor()
+            .timer(Duration::from_millis(1000))
+            .await;
+        cx.update(|cx| {
+            let platform = shell.read(cx).platform().clone();
+            platform.update(cx, |scene, cx| scene.set_badge(3, cx));
+            println!("PROBE badge count=3");
+        });
+        cx.background_executor()
+            .timer(Duration::from_secs(10))
+            .await;
+        cx.update(|cx| {
+            let platform = shell.read(cx).platform().clone();
+            platform.update(cx, |scene, cx| scene.set_badge(0, cx));
+            cx.quit();
+        });
+    })
+    .detach();
+}
+
+/// Posts a test notification through one backend and prints what it reported.
+fn notify_probe(window: WindowHandle<gpui_component::Root>, backend: NotifyBackend, cx: &mut App) {
+    let shell = shell_of(window, cx);
+    cx.spawn(async move |cx| {
+        cx.background_executor()
+            .timer(Duration::from_millis(1200))
+            .await;
+        let (bundled, ()) = cx.update(|cx| {
+            let platform = shell.read(cx).platform().clone();
+            platform.update(cx, |scene, cx| match backend {
+                NotifyBackend::Gpui => scene.notify_gpui(cx),
+                NotifyBackend::Fastframe => scene.notify_fastframe(cx),
+            });
+            (crate::platform::is_bundled(), ())
+        });
+        // The permission prompt (bundled runs) waits for the person; give the
+        // worker time to answer or fail.
+        cx.background_executor().timer(Duration::from_secs(6)).await;
+        cx.update(|cx| {
+            println!("PROBE notify bundled={bundled}");
+            let lines = shell.read(cx).platform().read(cx).log_lines();
+            for line in lines.iter().rev() {
+                println!("PROBE notify {line}");
+            }
+            cx.quit();
+        });
+    })
+    .detach();
 }
 
 /// Waits `seconds`, then reports how often the conversation view rendered in
@@ -161,19 +278,25 @@ fn snapshot(window: WindowHandle<gpui_component::Root>, dir: PathBuf, cx: &mut A
             cx.update(|cx| cx.quit());
             return;
         }
-        let steps: [(&str, SceneKind, bool); 4] = [
-            ("chat", SceneKind::Chat, false),
-            ("chat-selection", SceneKind::Chat, true),
-            ("media", SceneKind::Media, false),
-            ("platform", SceneKind::Platform, false),
+        // The Media scene is taller than the window: three shots of it.
+        let steps: [(&str, SceneKind, bool, f32); 6] = [
+            ("chat", SceneKind::Chat, false, 0.0),
+            ("chat-selection", SceneKind::Chat, true, 0.0),
+            ("media", SceneKind::Media, false, 0.0),
+            ("media-2", SceneKind::Media, false, 900.0),
+            ("media-3", SceneKind::Media, false, 1800.0),
+            ("platform", SceneKind::Platform, false, 0.0),
         ];
-        for (name, scene, with_selection) in steps {
+        for (name, scene, with_selection, scroll) in steps {
             let shown = cx.update(|cx| {
                 let shell = shell_of(window, cx);
                 window
                     .update(cx, |_, window, cx| {
                         shell.update(cx, |shell, cx| {
                             shell.set_scene(scene, window, cx);
+                            shell
+                                .media()
+                                .update(cx, |media, cx| media.scroll_to(scroll, cx));
                             let chat = shell.chat().clone();
                             chat.update(cx, |chat, cx| {
                                 chat.conversation().update(cx, |view, cx| {
@@ -194,9 +317,15 @@ fn snapshot(window: WindowHandle<gpui_component::Root>, dir: PathBuf, cx: &mut A
             if !shown {
                 break;
             }
-            // Give the window a few frames to lay out and paint.
+            // Give the window a few frames to lay out and paint; the Media
+            // scene also generates its pictures and renders its Lottie first.
+            let wait = if scene == SceneKind::Media && scroll == 0.0 {
+                2200
+            } else {
+                900
+            };
             cx.background_executor()
-                .timer(Duration::from_millis(900))
+                .timer(Duration::from_millis(wait))
                 .await;
             let image = cx.update(|cx| {
                 cx.update_window(window.into(), |_, window, cx| {

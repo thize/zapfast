@@ -9,7 +9,7 @@ use crate::scenes::platform::PlatformScene;
 use crate::ui::{ActivePalette, avatar, icon, palette};
 use gpui::{
     AppContext as _, Context, CursorStyle, FocusHandle, Focusable, FontWeight, InteractiveElement,
-    IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
+    IntoElement, ParentElement, Render, Role, SharedString, StatefulInteractiveElement, Styled,
     Subscription, Window, actions, div, img, prelude::FluentBuilder, px,
 };
 use gpui_component::theme::{Theme, ThemeMode};
@@ -27,8 +27,15 @@ pub struct Shell {
     chats: Vec<ChatSummary>,
     focus: FocusHandle,
     stats: Rc<Stats>,
+    /// Whether the window is presented at all (not covered or minimized).
+    window_visible: bool,
+    /// The benchmark's video keeps running whatever the window's state.
+    ignore_visibility: bool,
+    /// Where `--a11y-dump` writes the accessibility tree.
+    a11y_dump: Option<std::path::PathBuf>,
     _appearance: Subscription,
     _activation: Subscription,
+    _visibility: Subscription,
 }
 
 /// Makes gpui-component's theme (used by the text area) match the palette.
@@ -77,8 +84,12 @@ impl Shell {
         let convo = data::default_conversation();
         let chat_stats = stats.clone();
         let chat = cx.new(|cx| ChatScene::new(convo, chat_stats, bench, window, cx));
-        let media = cx.new(|_| MediaScene);
-        let platform = cx.new(|_| PlatformScene);
+        let video_bench = matches!(cli.bench, Some((crate::bench::BenchKind::Video, _)));
+        let media = {
+            let stats = stats.clone();
+            cx.new(|cx| MediaScene::new(video_bench, stats, cx))
+        };
+        let platform = cx.new(|cx| PlatformScene::new(window, cx));
 
         let forced = cli.dark;
         let appearance = window.observe_window_appearance(move |window, cx| {
@@ -99,17 +110,32 @@ impl Shell {
             let active = window.is_window_active();
             Theme::update(cx, |theme| theme.cursor_blink = caret_policy(active));
         });
-        let shell = Self {
-            scene: cli.scene,
+        // A covered or minimized window gets no frames; nothing should keep
+        // animating for it (the platform reports it through this callback).
+        let visibility = cx.observe_window_visibility(window, |this, visibility, _, cx| {
+            this.window_visible = visibility.is_visible();
+            this.sync_media(cx);
+        });
+        let mut shell = Self {
+            scene: if video_bench {
+                SceneKind::Media
+            } else {
+                cli.scene
+            },
             chat,
             media,
             platform,
             chats: data::chat_list(),
             focus: cx.focus_handle(),
             stats,
+            window_visible: window.visibility().is_visible(),
+            ignore_visibility: video_bench,
+            a11y_dump: cli.a11y_dump.clone(),
             _appearance: appearance,
             _activation: activation,
+            _visibility: visibility,
         };
+        shell.sync_media(cx);
         if let Some(index) = cli.jump {
             let chat = shell.chat.read(cx).conversation().clone();
             chat.update(cx, |view, cx| view.jump_to(index, cx));
@@ -122,12 +148,30 @@ impl Shell {
         self.stats.clone()
     }
 
+    pub fn media(&self) -> &gpui::Entity<MediaScene> {
+        &self.media
+    }
+
+    pub fn platform(&self) -> &gpui::Entity<PlatformScene> {
+        &self.platform
+    }
+
+    /// The Media scene animates only while it is the scene shown and the
+    /// window is presented.
+    fn sync_media(&mut self, cx: &mut Context<Self>) {
+        let active =
+            self.scene == SceneKind::Media && (self.window_visible || self.ignore_visibility);
+        self.media
+            .update(cx, |media, cx| media.set_active(active, cx));
+    }
+
     pub fn chat(&self) -> &gpui::Entity<ChatScene> {
         &self.chat
     }
 
     pub fn set_scene(&mut self, scene: SceneKind, window: &mut Window, cx: &mut Context<Self>) {
         self.scene = scene;
+        self.sync_media(cx);
         self.focus_scene(window, cx);
         cx.notify();
     }
@@ -146,6 +190,9 @@ impl Shell {
 
     fn switcher(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
         div()
+            .id("scenes")
+            .role(Role::TabList)
+            .aria_label("Cenas")
             .flex()
             .flex_none()
             .p(px(2.))
@@ -156,6 +203,9 @@ impl Shell {
                 let active = kind == self.scene;
                 div()
                     .id(("scene", i))
+                    .role(Role::Tab)
+                    .aria_label(kind.label())
+                    .aria_selected(active)
                     .px(px(10.))
                     .py(px(4.))
                     .rounded(px(6.))
@@ -180,6 +230,11 @@ impl Shell {
         let selected = index == 0;
         div()
             .id(("chat", index))
+            .role(Role::ListItem)
+            .aria_label(chat_label(chat))
+            .aria_selected(selected)
+            .aria_position_in_set(index + 1)
+            .aria_size_of_set(self.chats.len())
             .flex()
             .flex_none()
             .items_center()
@@ -262,6 +317,22 @@ impl Shell {
     }
 }
 
+/// What a screen reader says for a chat in the list.
+pub fn chat_label(chat: &ChatSummary) -> String {
+    let mut label = format!("{}, {}", chat.name, chat.time);
+    match chat.unread {
+        0 => {}
+        1 => label.push_str(", 1 mensagem não lida"),
+        n => label.push_str(&format!(", {n} mensagens não lidas")),
+    }
+    if chat.muted {
+        label.push_str(", silenciada");
+    }
+    label.push_str(": ");
+    label.push_str(chat.preview);
+    label
+}
+
 impl Focusable for Shell {
     fn focus_handle(&self, _cx: &gpui::App) -> FocusHandle {
         self.focus.clone()
@@ -269,7 +340,19 @@ impl Focusable for Shell {
 }
 
 impl Render for Shell {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The tree is the previous frame's, so it is written from the next
+        // frame's callback; only while a screen reader (or any AX client) has
+        // switched accessibility on, and only after this view re-rendered.
+        if let Some(path) = self.a11y_dump.clone()
+            && window.is_a11y_active()
+        {
+            window.on_next_frame(move |window, _| {
+                if let Some(json) = window.debug_a11y_tree_json() {
+                    let _ = std::fs::write(&path, json);
+                }
+            });
+        }
         let p = palette(cx);
         let icon_button = |path: &'static str| {
             div()
@@ -323,6 +406,8 @@ impl Render for Shell {
                 .child(
                     div()
                         .id("chat-list")
+                        .role(Role::List)
+                        .aria_label("Conversas")
                         .flex_1()
                         .min_h_0()
                         .overflow_y_scroll()
@@ -361,5 +446,34 @@ impl Render for Shell {
             .text_size(px(15.))
             .child(sidebar)
             .child(div().flex_1().min_w_0().h_full().child(scene))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chats_read_as_name_time_unread_and_preview() {
+        let chat = ChatSummary {
+            name: "Família Souza",
+            preview: "Ana: bom dia",
+            time: "08:41",
+            unread: 3,
+            muted: false,
+        };
+        assert_eq!(
+            chat_label(&chat),
+            "Família Souza, 08:41, 3 mensagens não lidas: Ana: bom dia"
+        );
+        let quiet = ChatSummary {
+            unread: 1,
+            muted: true,
+            ..chat
+        };
+        assert_eq!(
+            chat_label(&quiet),
+            "Família Souza, 08:41, 1 mensagem não lida, silenciada: Ana: bom dia"
+        );
     }
 }

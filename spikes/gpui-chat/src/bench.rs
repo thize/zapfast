@@ -9,6 +9,14 @@ use std::time::{Duration, Instant};
 pub enum BenchKind {
     Idle,
     Scroll,
+    Video,
+}
+
+/// Which notification API a probe uses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotifyBackend {
+    Gpui,
+    Fastframe,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -52,6 +60,15 @@ pub struct Cli {
     pub jump: Option<usize>,
     /// Forces light or dark instead of following the OS (`Some(true)` is dark).
     pub dark: Option<bool>,
+    /// Writes the accessibility tree (`Window::debug_a11y_tree_json`) to this
+    /// file on every frame while a screen reader or an AX client is attached.
+    pub a11y_dump: Option<PathBuf>,
+    /// Posts a test notification through one backend, prints what happened as
+    /// `PROBE notify ...` lines, and quits.
+    pub probe_notify: Option<NotifyBackend>,
+    /// Shows a Dock badge of 3 for ten seconds (a regular, unfocused app, so
+    /// the Dock has a tile to put it on), then quits.
+    pub probe_badge: bool,
 }
 
 impl Cli {
@@ -66,8 +83,11 @@ impl Cli {
                     kind = Some(match args.next().as_deref() {
                         Some("idle") => BenchKind::Idle,
                         Some("scroll") => BenchKind::Scroll,
+                        Some("video") => BenchKind::Video,
                         other => {
-                            return Err(format!("--bench takes idle or scroll, not {other:?}"));
+                            return Err(format!(
+                                "--bench takes idle, scroll or video, not {other:?}"
+                            ));
                         }
                     });
                 }
@@ -95,6 +115,19 @@ impl Cli {
                         _ => return Err("--appearance takes light or dark".into()),
                     });
                 }
+                "--a11y-dump" => {
+                    cli.a11y_dump = Some(args.next().ok_or("--a11y-dump takes a file")?.into());
+                }
+                "--probe" => match args.next().as_deref() {
+                    Some("badge") => cli.probe_badge = true,
+                    Some("notify-gpui") => cli.probe_notify = Some(NotifyBackend::Gpui),
+                    Some("notify-fastframe") => cli.probe_notify = Some(NotifyBackend::Fastframe),
+                    other => {
+                        return Err(format!(
+                            "--probe takes notify-gpui, notify-fastframe or badge, not {other:?}"
+                        ));
+                    }
+                },
                 "--jump" => {
                     cli.jump = Some(
                         args.next()
@@ -301,6 +334,21 @@ mod tests {
             parse(&["--bench", "idle"]).unwrap().bench,
             Some((BenchKind::Idle, 8))
         );
+        assert_eq!(
+            parse(&["--bench", "video", "--seconds", "3"])
+                .unwrap()
+                .bench,
+            Some((BenchKind::Video, 3))
+        );
+        assert_eq!(
+            parse(&["--probe", "notify-gpui"]).unwrap().probe_notify,
+            Some(NotifyBackend::Gpui)
+        );
+        assert_eq!(
+            parse(&["--a11y-dump", "/tmp/a.json"]).unwrap().a11y_dump,
+            Some(PathBuf::from("/tmp/a.json"))
+        );
+        assert!(parse(&["--probe", "x"]).is_err());
         assert!(parse(&["--bench", "x"]).is_err());
         assert!(parse(&["--seconds", "0"]).is_err());
         assert!(parse(&["--nope"]).is_err());
