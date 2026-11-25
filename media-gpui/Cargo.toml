@@ -1,0 +1,39 @@
+[package]
+name = "zapfast-gpui-media"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Media components for ZapFast's GPUI interface: pictures, GIF and WebP, Lottie stickers and video"
+
+# Keeps this crate out of the root zapfast package (and its Cargo.lock).
+[workspace]
+
+[dependencies]
+# The same pins as spikes/gpui-chat and gpui-component 0.11.0.
+gpui = { package = "gpui-pre", version = "=0.3.14" }
+# Decoding posters and converting pictures: the same 0.25 line GPUI's own
+# `RenderImage` frames use, so `image::Frame` is one type.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+# ZapFast's in-process Lottie rasterizer, with the root package's declaration.
+rasterlottie = { version = "=0.2.4", default-features = false, features = ["images", "text"] }
+# Reads the animation out of WhatsApp's `.was` Lottie archives, as the root
+# package's src/lottie.rs does.
+zip = { version = "9", default-features = false, features = ["deflate"] }
+# The channel a decoder thread pushes video frames through, awaited by GPUI's
+# executor (no polling).
+futures = "0.3"
+
+[dev-dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.14", features = ["test-support"] }
+# The gallery example opens a real window.
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.14", features = ["font-kit", "runtime_shaders"] }
+tempfile = "3"
+# CPU time of the gallery example's benchmarks (getrusage).
+libc = "0.2"
+
+# GPUI is unusably slow unoptimized; same profile as the spike.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
