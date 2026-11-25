@@ -25,6 +25,7 @@ impl Failure {
 }
 
 /// Translate known worker errors at the UI boundary; preserve library errors.
+#[cfg_attr(not(feature = "egui-ui"), allow(dead_code))]
 pub(crate) fn localize_error(locale: crate::i18n::Locale, error: String) -> String {
     match error.as_str() {
         "Unblock this contact to send messages." => {

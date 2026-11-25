@@ -232,6 +232,7 @@ mod tests {
 
     const PEER: &str = "15550002222@s.whatsapp.net";
 
+    #[cfg(feature = "egui-ui")]
     #[test]
     fn blocked_contact_mapping_never_exposes_a_locked_contact_between_events() {
         for blocked in [false, true] {

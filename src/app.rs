@@ -34,8 +34,7 @@ fn download_notice(error: String) -> String {
     }
 }
 
-/// Initial and incremental message-page size.
-pub const PAGE: usize = 60;
+pub use crate::model::PAGE;
 /// Minimum delay between phone history requests.
 const PHONE_COOLDOWN: Duration = Duration::from_secs(6);
 /// WhatsApp message-edit window.
@@ -1073,11 +1072,7 @@ pub enum Pending {
     Document(PathBuf),
 }
 
-/// What names a staged attachment. It is handed out when the attachment is
-/// staged and never changes afterwards, so work that finishes later can say
-/// which attachment it belongs to instead of which place in the strip it sat
-/// in when the work started.
-pub type AttachmentId = u64;
+pub use crate::model::AttachmentId;
 
 /// One attachment in the strip, with the identity it keeps while it is staged.
 pub struct Staged {
@@ -1178,12 +1173,7 @@ impl App {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-/// A display-name mention selected in the composer and captured with a send.
-pub struct ComposerMention {
-    id: String,
-    name: String,
-}
+pub use crate::model::ComposerMention;
 
 impl Pending {
     /// Whether the composer can preview the file as an image.
@@ -1195,9 +1185,7 @@ impl Pending {
 
     /// Whether this file can be decoded and sent as a WhatsApp view-once photo.
     pub fn is_view_once_photo_file(path: &std::path::Path) -> bool {
-        mime_guess2::from_path(path)
-            .first_raw()
-            .is_some_and(|mime| matches!(mime, "image/jpeg" | "image/png" | "image/webp"))
+        crate::model::is_view_once_photo_file(path)
     }
 }
 

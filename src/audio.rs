@@ -749,7 +749,7 @@ impl Recorder {
     }
 
     /// Creates a completed synthetic recording without opening an audio device.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "egui-ui"))]
     pub(crate) fn recorded_fixture(samples: Vec<f32>) -> Self {
         let recorder = Self::rehearsal();
         *recorder.outcome.lock().unwrap_or_else(|p| p.into_inner()) = Some(Ok(samples));
@@ -776,7 +776,7 @@ impl Recorder {
         self.stepped.store(stepped, Ordering::Relaxed);
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "egui-ui"))]
     pub(crate) fn is_stepped(&self) -> bool {
         self.stepped.load(Ordering::Relaxed)
     }
@@ -1019,6 +1019,7 @@ mod tests {
 
     /// A stepped recorder keeps recording, but its levels stop asking the
     /// window for frames of their own; unstepped, they ask again.
+    #[cfg(feature = "egui-ui")]
     #[test]
     fn a_stepped_recorder_records_without_asking_for_frames() {
         let ctx = egui::Context::default();

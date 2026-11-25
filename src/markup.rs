@@ -2,17 +2,27 @@
 //!
 //! `*bold*`, `_italic_`, `~struck~`, `` `mono` ``, fenced blocks, `> `
 //! quotes, `* ` lists, links, phone numbers, email addresses, and named
-//! `@mentions`. Emoji go through [`crate::emoji`].
+//! `@mentions`. Emoji go through [`crate::emoji`]. Without the `egui-ui`
+//! feature only the parsing is here: [`links`], [`plain`] and
+//! [`name_mentions`].
 
+#[cfg(feature = "egui-ui")]
 use std::ops::Range;
+#[cfg(feature = "egui-ui")]
 use std::sync::Arc;
 
+#[cfg(feature = "egui-ui")]
 use egui::text::LayoutJob;
+#[cfg(feature = "egui-ui")]
 use egui::{Color32, FontId, Galley, Pos2, Stroke, TextFormat};
+#[cfg(feature = "egui-ui")]
 use fastframe_text::snap_to_pixels;
 
+#[cfg(feature = "egui-ui")]
 use crate::bidi;
+#[cfg(feature = "egui-ui")]
 use crate::emoji;
+#[cfg(feature = "egui-ui")]
 use crate::theme;
 
 /// WhatsApp mention id and display name.
@@ -22,6 +32,7 @@ pub struct Mention {
     pub name: String,
 }
 
+#[cfg(feature = "egui-ui")]
 #[derive(Clone, Copy, Debug)]
 pub struct Style {
     pub size: f32,
@@ -32,6 +43,7 @@ pub struct Style {
 }
 
 /// Message text prepared for painting.
+#[cfg(feature = "egui-ui")]
 pub struct Text {
     pub galley: Arc<Galley>,
     placements: Vec<String>,
@@ -42,6 +54,7 @@ pub struct Text {
     accessible_text: String,
 }
 
+#[cfg(feature = "egui-ui")]
 impl Text {
     /// Emoji sequences represented by placeholder glyphs.
     pub fn placements(&self) -> &[String] {
@@ -71,6 +84,7 @@ struct Span {
 }
 
 /// Lays text out within `max_width`.
+#[cfg(feature = "egui-ui")]
 pub fn layout(
     ui: &egui::Ui,
     text: &str,
@@ -143,6 +157,7 @@ pub fn layout(
 }
 
 /// Paints laid-out text at `pos`.
+#[cfg(feature = "egui-ui")]
 pub fn paint(ui: &egui::Ui, text: &Text, pos: Pos2, fallback: Color32) {
     ui.painter().galley(pos, text.galley.clone(), fallback);
     emoji::paint(ui, &text.galley, pos, &text.placements);
@@ -150,6 +165,7 @@ pub fn paint(ui: &egui::Ui, text: &Text, pos: Pos2, fallback: Color32) {
 
 /// Paints selectable text. The response must sense clicks and drags. Set
 /// `visible` false for off-screen galleys kept only for selection state.
+#[cfg(feature = "egui-ui")]
 pub fn paint_selectable(
     ui: &egui::Ui,
     text: &Text,

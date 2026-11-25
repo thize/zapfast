@@ -7,15 +7,24 @@
 //! texture. `mp4` also reads the AAC track, symphonia's AAC decoder decodes
 //! it, and rodio plays it; its position steers the clock while it lasts. Other codecs
 //! are reported so the video can open in the system player instead.
+//!
+//! Without the `egui-ui` feature only the picture conversion and the decoders
+//! are built, which a call's video shares: the player draws through egui.
+#![cfg_attr(not(feature = "egui-ui"), allow(dead_code))]
 
+#[cfg(feature = "egui-ui")]
 use std::cell::Cell;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, VecDeque};
 use std::path::{Path, PathBuf};
+#[cfg(feature = "egui-ui")]
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
+#[cfg(feature = "egui-ui")]
+use std::sync::mpsc::TryRecvError;
+use std::sync::mpsc::{Receiver, SyncSender};
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "egui-ui")]
 use egui::{ColorImage, TextureHandle, TextureOptions};
 
 use crate::backend::Waker;
@@ -50,6 +59,7 @@ pub enum State {
 }
 
 /// Playback state of the video being shown.
+#[cfg(feature = "egui-ui")]
 #[derive(Clone)]
 pub struct Status {
     pub state: State,
@@ -60,6 +70,7 @@ pub struct Status {
     pub frame: Option<TextureHandle>,
 }
 
+#[cfg(feature = "egui-ui")]
 impl Status {
     /// Played fraction, from 0 to 1.
     pub fn fraction(&self) -> f32 {
@@ -171,6 +182,7 @@ pub fn take_due<T>(queue: &mut VecDeque<(Duration, T)>, position: Duration) -> O
 
 /// The part of a `width` by `height` picture that fills a circle: its
 /// centred square, in texture coordinates.
+#[cfg(feature = "egui-ui")]
 pub fn square_uv(width: f32, height: f32) -> egui::Rect {
     if width <= 0.0 || height <= 0.0 {
         return egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0));
@@ -185,6 +197,7 @@ pub fn square_uv(width: f32, height: f32) -> egui::Rect {
 
 /// Points along a circle from twelve o'clock clockwise, covering `fraction`
 /// of it: the progress ring around a video note.
+#[cfg(feature = "egui-ui")]
 pub fn arc(center: egui::Pos2, radius: f32, fraction: f32) -> Vec<egui::Pos2> {
     let fraction = fraction.clamp(0.0, 1.0);
     // About one point every three degrees.
@@ -555,6 +568,7 @@ fn sound_codec(path: &Path) -> Option<String> {
     })
 }
 
+#[cfg(feature = "egui-ui")]
 struct Session {
     message: String,
     path: PathBuf,
@@ -582,12 +596,14 @@ struct Session {
 
 /// Frames of another size on their way: the video keeps playing the ones it
 /// has, sound and all, until these catch up with the clock.
+#[cfg(feature = "egui-ui")]
 struct Resize {
     side: u32,
     frames: Receiver<Delivery>,
     queue: VecDeque<(Duration, PixelImage)>,
 }
 
+#[cfg(feature = "egui-ui")]
 impl Session {
     fn pause(&mut self, now: Instant) {
         match self.state {
@@ -668,6 +684,7 @@ impl Session {
 }
 
 /// Plays one video at a time inside its message.
+#[cfg(feature = "egui-ui")]
 pub struct Player {
     waker: Waker,
     session: Option<Session>,
@@ -684,6 +701,7 @@ pub struct Player {
     speed: f32,
 }
 
+#[cfg(feature = "egui-ui")]
 impl Player {
     /// Re-upload the current frame when the player moves to a new window.
     pub fn attach(&mut self, ctx: &egui::Context) {
@@ -1503,7 +1521,7 @@ fn rgb(y: i32, u: i32, v: i32) -> Pixel {
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "egui-ui"))]
 mod tests {
     use super::*;
 

@@ -2,13 +2,18 @@
 //! the reader's own in place of both.
 
 use std::path::{Path, PathBuf};
+#[cfg(feature = "egui-ui")]
 use std::sync::{Arc, Mutex, mpsc};
 
+#[cfg(feature = "egui-ui")]
 use egui::{Color32, ColorImage, Rect, TextureHandle, TextureOptions, Vec2, pos2};
+
+use crate::pixels::PixelImage;
 
 /// The default doodle tile, drawn from Lucide icons (ISC, see
 /// `assets/icons/LICENSE.txt`). It is embedded so the wallpaper works offline
 /// and does not depend on a third-party request at runtime.
+#[cfg(feature = "egui-ui")]
 const DEFAULT_SVG: &[u8] = include_bytes!("../assets/wallpaper.svg");
 
 /// The longest side a wallpaper image keeps, which bounds its texture to about
@@ -18,10 +23,12 @@ pub const MAX_SIDE: u32 = 2560;
 /// The extensions a copied wallpaper image may have.
 const EXTENSIONS: [&str; 4] = ["jpg", "png", "webp", "gif"];
 
+#[cfg(feature = "egui-ui")]
 #[derive(Clone, Default)]
 struct Cache(Arc<Mutex<Option<TextureHandle>>>);
 
 /// The uploaded custom image and which image it was made from.
+#[cfg(feature = "egui-ui")]
 #[derive(Clone)]
 struct ImageTexture {
     generation: u64,
@@ -29,6 +36,7 @@ struct ImageTexture {
 }
 
 /// What the conversation shows behind its bubbles.
+#[cfg(feature = "egui-ui")]
 #[derive(Clone)]
 pub struct Look {
     /// The background colour, with the Theme choice already resolved.
@@ -40,6 +48,7 @@ pub struct Look {
 }
 
 /// Paint the wallpaper over the conversation panel.
+#[cfg(feature = "egui-ui")]
 pub fn paint(ui: &egui::Ui, look: &Look) {
     paint_rect(ui, ui.max_rect(), look);
 }
@@ -47,6 +56,7 @@ pub fn paint(ui: &egui::Ui, look: &Look) {
 /// Paint the wallpaper into a bounded rectangle: the image cover-fitted if
 /// there is one, otherwise the colour with the SVG's intrinsic 374 x 666
 /// logical-pixel doodle tile repeated in both axes.
+#[cfg(feature = "egui-ui")]
 pub fn paint_rect(ui: &egui::Ui, rect: Rect, look: &Look) {
     let painter = ui.painter().with_clip_rect(rect);
     painter.rect_filled(rect, 0.0, look.color);
@@ -98,6 +108,7 @@ pub fn paint_rect(ui: &egui::Ui, rect: Rect, look: &Look) {
 /// stands further from it, as opaque as it takes to differ from the
 /// background by a fixed step. Any theme colour then shows the doodles about
 /// as faintly as WhatsApp's own colours do, mid-tones included.
+#[cfg(feature = "egui-ui")]
 pub fn doodle_ink(background: Color32) -> Color32 {
     const DARK_INK: u8 = 30;
     const LIGHT_INK: u8 = 255;
@@ -116,6 +127,7 @@ pub fn doodle_ink(background: Color32) -> Color32 {
 
 /// The part of an image of `image` size that covers `area` while keeping its
 /// aspect ratio: the whole of its shorter dimension, centred on the longer.
+#[cfg(feature = "egui-ui")]
 pub fn cover_uv(image: Vec2, area: Vec2) -> Rect {
     let full = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
     if image.x <= 0.0 || image.y <= 0.0 || area.x <= 0.0 || area.y <= 0.0 {
@@ -134,11 +146,13 @@ pub fn cover_uv(image: Vec2, area: Vec2) -> Rect {
     }
 }
 
+#[cfg(feature = "egui-ui")]
 fn image_texture_id() -> egui::Id {
     egui::Id::new("chat-wallpaper-image")
 }
 
 /// The custom image's texture, uploaded once per image and window.
+#[cfg(feature = "egui-ui")]
 fn image_texture(
     ctx: &egui::Context,
     (generation, image): &(u64, Arc<ColorImage>),
@@ -165,19 +179,21 @@ fn image_texture(
 }
 
 /// Drops the custom image's texture, which frees it once nothing draws it.
+#[cfg(feature = "egui-ui")]
 pub fn forget_image(ctx: &egui::Context) {
     ctx.data_mut(|data| data.remove::<ImageTexture>(image_texture_id()));
 }
 
 /// The textures a window holds for the custom image and the doodle tile, for
 /// telling them apart in painted shapes.
-#[cfg(test)]
+#[cfg(all(test, feature = "egui-ui"))]
 pub(crate) fn texture_ids(ctx: &egui::Context) -> (Option<egui::TextureId>, egui::TextureId) {
     let image = ctx.data(|data| data.get_temp::<ImageTexture>(image_texture_id()));
     let doodles = texture(ctx).expect("the doodle tile renders");
     (image.map(|image| image.texture.id()), doodles.id())
 }
 
+#[cfg(feature = "egui-ui")]
 fn texture(ctx: &egui::Context) -> Option<TextureHandle> {
     let cache = ctx.data_mut(|data| {
         data.get_temp_mut_or_default::<Cache>(egui::Id::new("chat-wallpaper"))
@@ -197,6 +213,7 @@ fn texture(ctx: &egui::Context) -> Option<TextureHandle> {
     Some(texture)
 }
 
+#[cfg(feature = "egui-ui")]
 fn rasterize() -> Option<ColorImage> {
     // The source uses currentColor. Render a white mask once, then use the
     // painter tint to adapt the line colour and opacity to the active theme.
@@ -229,6 +246,7 @@ fn rasterize() -> Option<ColorImage> {
 /// The wallpaper image named in the settings, decoded off the interface
 /// thread. A file that is missing or cannot be decoded leaves the colour in
 /// place and is not tried again until the setting changes.
+#[cfg(feature = "egui-ui")]
 #[derive(Default)]
 pub struct CustomImage {
     /// The file last asked for.
@@ -240,6 +258,7 @@ pub struct CustomImage {
     pending: Option<mpsc::Receiver<Result<ColorImage, String>>>,
 }
 
+#[cfg(feature = "egui-ui")]
 impl CustomImage {
     /// Follows the setting: decodes a newly named file on a thread, drops the
     /// image when the setting is cleared, and collects a finished decode.
@@ -255,7 +274,7 @@ impl CustomImage {
                 let spawned = std::thread::Builder::new()
                     .name("wallpaper-image".into())
                     .spawn(move || {
-                        let _ = sender.send(decode(&path));
+                        let _ = sender.send(decode(&path).map(ColorImage::from));
                         waker.wake();
                     });
                 match spawned {
@@ -311,7 +330,7 @@ impl CustomImage {
 }
 
 /// Reads an image for display, no larger than [`MAX_SIDE`].
-pub fn decode(path: &Path) -> Result<ColorImage, String> {
+pub fn decode(path: &Path) -> Result<PixelImage, String> {
     let decoded = image::ImageReader::open(path)
         .and_then(image::ImageReader::with_guessed_format)
         .map_err(|error| error.to_string())?
@@ -319,7 +338,7 @@ pub fn decode(path: &Path) -> Result<ColorImage, String> {
         .map_err(|error| error.to_string())?;
     let rgba = bounded(decoded).to_rgba8();
     let size = [rgba.width() as usize, rgba.height() as usize];
-    Ok(ColorImage::from_rgba_unmultiplied(size, rgba.as_raw()))
+    Ok(PixelImage::from_rgba_unmultiplied(size, rgba.as_raw()))
 }
 
 fn bounded(image: image::DynamicImage) -> image::DynamicImage {
@@ -393,8 +412,10 @@ pub fn remove(state: &Path) {
 mod tests {
     use super::*;
     use crate::paths::AppDirs;
+    #[cfg(feature = "egui-ui")]
     use egui::vec2;
 
+    #[cfg(feature = "egui-ui")]
     #[test]
     fn default_tile_keeps_its_intrinsic_dimensions() {
         let image = rasterize().expect("default wallpaper SVG renders");
@@ -402,6 +423,7 @@ mod tests {
         assert!(image.pixels.iter().any(|pixel| pixel.a() != 0));
     }
 
+    #[cfg(feature = "egui-ui")]
     #[test]
     fn cover_fit_fills_the_area_and_crops_the_centre() {
         let close = |a: Rect, b: Rect| {
@@ -430,6 +452,7 @@ mod tests {
         close(cover_uv(vec2(10.0, 10.0), vec2(0.0, 0.0)), full);
     }
 
+    #[cfg(feature = "egui-ui")]
     #[test]
     fn doodles_show_on_every_background() {
         for level in 0..=255u8 {
@@ -465,6 +488,7 @@ mod tests {
         assert_eq!(ink_alpha(doodle_ink(Color32::from_rgb(22, 23, 23))), 42);
     }
 
+    #[cfg(feature = "egui-ui")]
     fn ink_alpha(ink: Color32) -> u8 {
         ink.to_srgba_unmultiplied()[3]
     }
@@ -518,6 +542,7 @@ mod tests {
         remove(&dirs.state);
     }
 
+    #[cfg(feature = "egui-ui")]
     #[test]
     fn a_missing_or_damaged_image_falls_back_to_the_colour() {
         let root = tempfile::tempdir().unwrap();
@@ -537,6 +562,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "egui-ui")]
     #[test]
     fn the_image_follows_the_setting() {
         let root = tempfile::tempdir().unwrap();

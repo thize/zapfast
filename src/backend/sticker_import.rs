@@ -39,6 +39,7 @@ fn hex_bytes(hex: &str) -> Option<[u8; 32]> {
 }
 
 /// Whether pasted text contains a complete signal.art pack link.
+#[cfg_attr(not(feature = "egui-ui"), allow(dead_code))]
 pub fn looks_like_signal_url(text: &str) -> bool {
     parse_signal_url(text).is_ok()
 }

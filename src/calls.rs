@@ -10,7 +10,7 @@
 //!
 //! Video is H.264 Annex-B both ways, because that is what the library transports: it never touches
 //! pixels. Capture encodes with the `openh264` encoder the app already links, and the peer's access
-//! units decode back to `egui` images with the `openh264` decoder `crate::video` already uses.
+//! units decode back to pictures with the `openh264` decoder `crate::video` already uses.
 //! Frames cross to the UI through [`VideoTick`]; no decode work happens on the UI thread.
 
 use std::sync::Arc;

@@ -312,6 +312,7 @@ impl WallpaperColor {
 
     /// The colour drawn under `palette`: [`Self::Theme`] is its chat colour,
     /// read at draw time so a theme switch or Omarchy reload shows at once.
+    #[cfg(feature = "egui-ui")]
     pub fn color32(self, palette: &crate::theme::Palette) -> egui::Color32 {
         match self.rgb() {
             Some([r, g, b]) => egui::Color32::from_rgb(r, g, b),
@@ -442,6 +443,14 @@ impl From<WindowGeometry> for fastframe_shell::window::Geometry {
     }
 }
 
+/// The last palette a theme file gave, as the settings file keeps it. The egui
+/// interface reads it as its own palette; without that interface it passes
+/// through as written, so what the interface cached survives a save.
+#[cfg(feature = "egui-ui")]
+pub type CachedTheme = crate::theme::CustomTheme;
+#[cfg(not(feature = "egui-ui"))]
+pub type CachedTheme = serde_json::Value;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -465,18 +474,18 @@ pub struct Settings {
     pub interface_language: Option<crate::i18n::Locale>,
     /// Filename of the selected local JSON palette.
     pub custom_theme: Option<String>,
-    #[serde(
-        default,
-        deserialize_with = "fastframe_theme::read_cached_theme",
-        skip_serializing_if = "Option::is_none"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "egui-ui",
+        serde(deserialize_with = "fastframe_theme::read_cached_theme")
     )]
-    pub custom_theme_cache: Option<crate::theme::CustomTheme>,
-    #[serde(
-        default,
-        deserialize_with = "fastframe_theme::read_cached_theme",
-        skip_serializing_if = "Option::is_none"
+    pub custom_theme_cache: Option<CachedTheme>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "egui-ui",
+        serde(deserialize_with = "fastframe_theme::read_cached_theme")
     )]
-    pub system_theme_cache: Option<crate::theme::CustomTheme>,
+    pub system_theme_cache: Option<CachedTheme>,
     /// egui zoom factor.
     pub zoom: f32,
     pub sidebar_width: f32,
@@ -671,10 +680,12 @@ impl Settings {
     }
 
     /// The wallpaper colour for `palette`, with Theme resolved against it.
+    #[cfg(feature = "egui-ui")]
     pub fn wallpaper_background(&self, palette: &crate::theme::Palette) -> egui::Color32 {
         self.wallpaper_color_for(palette.dark).color32(palette)
     }
 
+    #[cfg(feature = "egui-ui")]
     pub(crate) fn cached_palette(&self) -> Option<crate::theme::Palette> {
         let theme = if self.custom_theme.is_some() {
             self.custom_theme_cache.as_ref()
@@ -1078,6 +1089,7 @@ mod tests {
 
     /// The Messages theme is saved by name, and palettes cached before
     /// bubble styles existed keep WhatsApp's bubbles.
+    #[cfg(feature = "egui-ui")]
     #[test]
     fn messages_theme_round_trips_and_old_palettes_keep_whatsapp_bubbles() {
         let dir = tempfile::tempdir().unwrap();
@@ -1290,6 +1302,7 @@ mod tests {
         assert!(!merged(r#"{"pause_other_media":false}"#));
     }
 
+    #[cfg(feature = "egui-ui")]
     #[test]
     fn damaged_theme_cache_does_not_discard_other_settings() {
         let settings: Settings = serde_json::from_str(r#"{"custom_theme":"mine.json","custom_theme_cache":{"damaged":true},"enter_sends":false}"#).unwrap();
@@ -1369,6 +1382,7 @@ mod tests {
         assert_eq!(WallpaperColor::WillowBrook.label(), "Willow Brook");
     }
 
+    #[cfg(feature = "egui-ui")]
     #[test]
     fn the_theme_wallpaper_is_the_palettes_chat_colour() {
         use crate::theme::Palette;

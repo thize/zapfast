@@ -1119,6 +1119,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "egui-ui")]
     #[test]
     fn image_loader_reads_native_paths() {
         use egui::load::BytesPoll;

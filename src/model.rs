@@ -2285,12 +2285,32 @@ pub enum PictureSource {
     Pasted(Arc<Vec<u8>>),
 }
 
+/// What names a staged attachment. It is handed out when the attachment is
+/// staged and never changes afterwards, so work that finishes later can say
+/// which attachment it belongs to instead of which place in the strip it sat
+/// in when the work started.
+pub type AttachmentId = u64;
+
+/// A display-name mention selected in the composer and captured with a send.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ComposerMention {
+    pub(crate) id: String,
+    pub(crate) name: String,
+}
+
+/// Whether this file can be decoded and sent as a WhatsApp view-once photo.
+pub fn is_view_once_photo_file(path: &Path) -> bool {
+    mime_guess2::from_path(path)
+        .first_raw()
+        .is_some_and(|mime| matches!(mime, "image/jpeg" | "image/png" | "image/webp"))
+}
+
 /// A staged picture on its way to being cropped and sent.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PictureEdit {
     /// The staged attachment it replaces, named rather than numbered, so that
     /// removing another attachment cannot point it at a different picture.
-    pub target: crate::app::AttachmentId,
+    pub target: AttachmentId,
     pub source: PictureSource,
     /// The source picture's own size, before any turn.
     pub width: u32,
@@ -2302,12 +2322,7 @@ pub struct PictureEdit {
 
 impl PictureEdit {
     /// A whole, unturned picture from a staged attachment.
-    pub fn new(
-        target: crate::app::AttachmentId,
-        source: PictureSource,
-        width: u32,
-        height: u32,
-    ) -> Self {
+    pub fn new(target: AttachmentId, source: PictureSource, width: u32, height: u32) -> Self {
         Self {
             target,
             source,
@@ -2676,6 +2691,22 @@ pub struct Toast {
     pub message: String,
     pub kind: ToastKind,
     pub created: Instant,
+}
+
+/// Initial and incremental message-page size.
+pub const PAGE: usize = 60;
+
+/// A move of the cursor in a list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    Previous,
+    Next,
+    First,
+    Last,
+    /// Up by about a page of rows.
+    PageUp(usize),
+    /// Down by about a page of rows.
+    PageDown(usize),
 }
 
 /// A scroll request for the open chat's message list, from the keyboard.
@@ -3275,7 +3306,7 @@ pub enum Action {
     /// Scrolls the open chat by about a page, or to the top of its history.
     ScrollPage(Scroll),
     /// Moves the open chat's current message, from its focused message list.
-    MessageCursor(crate::ui::list_nav::Step),
+    MessageCursor(Step),
     /// Gives the open chat's message list keyboard focus.
     FocusMessages,
     /// Opens a message's context menu in the open chat, from the keyboard.
@@ -3443,14 +3474,14 @@ pub enum Action {
         account: AccountId,
         chat: ChatId,
         caption: String,
-        mentions: Vec<crate::app::ComposerMention>,
+        mentions: Vec<ComposerMention>,
     },
     /// Removes one pending attachment.
     RemovePending(usize),
     /// Sends the one eligible staged photo as a WhatsApp view-once message.
     SetPendingViewOnce(bool),
     /// Opens the cropper on a staged picture.
-    EditPicture(crate::app::AttachmentId),
+    EditPicture(AttachmentId),
     /// Keeps the crop and the turn, replacing the staged picture.
     ApplyPictureEdit,
     /// Closes the cropper, leaving the staged picture as it was.

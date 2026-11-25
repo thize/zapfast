@@ -17,6 +17,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "zapfast"
 path = "src/main.rs"
+required-features = ["egui-ui"]
 
 [dependencies]
 anyhow = "1"
@@ -46,12 +47,12 @@ serde_json = "1"
 log = "0.4"
 directories = "6"
 # UI framework. glow avoids the larger wgpu dependency.
-eframe = { version = "0.36.2", default-features = false, features = ["accesskit", "glow", "default_fonts", "links", "wayland", "x11", "persistence"] }
-egui = "0.36.2"
-egui_extras = { version = "0.36.2", features = ["file", "image", "svg", "webp", "gif"] }
+eframe = { version = "0.36.2", default-features = false, features = ["accesskit", "glow", "default_fonts", "links", "wayland", "x11", "persistence"], optional = true }
+egui = { version = "0.36.2", optional = true }
+egui_extras = { version = "0.36.2", features = ["file", "image", "svg", "webp", "gif"], optional = true }
 # Reads the colour emoji font's bitmaps for the demo tour's GIF fixtures. Keep
 # skrifa aligned with epaint to avoid compiling two versions.
-skrifa = "0.44"
+skrifa = { version = "0.44", optional = true }
 # Decodes JPEG, PNG, WebP, and GIF images.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 # WhatsApp Web protocol: pairing, encryption, history sync, and media. Version
@@ -104,7 +105,7 @@ zeroize = "1"
 rand = "0.10"
 # The updater's HTTP client, with the proxy setting.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "socks"] }
-qrcode = { version = "0.14", default-features = false }
+qrcode = { version = "0.14", default-features = false, optional = true }
 # Downloads profile pictures. The protocol library already includes this crate
 # and TLS stack.
 ureq = { version = "3", default-features = false, features = ["rustls", "socks-proxy"] }
@@ -114,7 +115,7 @@ unicode-segmentation = "1"
 # Unicode bidi properties; already included through URL/IDNA handling.
 icu_properties = "2.3"
 # Unicode Bidirectional Algorithm for mixed Hebrew, Arabic, and Latin text.
-unicode-bidi = "0.3.18"
+unicode-bidi = { version = "0.3.18", optional = true }
 # Canonical decomposition for accent-insensitive chat/contact search.
 icu_normalizer = { version = "2.3", default-features = false, features = ["compiled_data"] }
 # Opens downloaded attachments in their default desktop apps.
@@ -123,7 +124,7 @@ open = "5"
 # text support is already included through egui-winit, and MIME detection
 # through egui_extras.
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "wayland"] }
-arboard = { version = "3", default-features = false, features = ["image-data", "wayland-data-control"] }
+arboard = { version = "3", default-features = false, features = ["image-data", "wayland-data-control"], optional = true }
 mime_guess2 = "2"
 # Emoji names, groups, and shortcodes for picker search.
 emojis = "0.9"
@@ -177,31 +178,31 @@ libwebp-sys2 = { version = "0.2", features = ["1_2"] }
 fastframe-i18n = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1" }
 # The icons! table, a loader that survives reduce_texture_memory, and the Lucide
 # icons shared with Spotifast.
-fastframe-icons = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1" }
+fastframe-icons = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1", optional = true }
 # The platform's interface font (Inter where there is none), and installed
 # fonts for other scripts.
-fastframe-fonts = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1" }
+fastframe-fonts = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1", optional = true }
 # Colour emoji in the platform's own style, with the bundled Noto behind
 # them, drawn off the interface thread.
-fastframe-emoji = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1" }
+fastframe-emoji = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1", optional = true }
 # Follows the desktop's hinting and glyph coverage, live through the portal.
-fastframe-text = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1", features = ["watch"] }
+fastframe-text = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1", features = ["watch"], optional = true }
 # Palette files, the shared presets, and following Omarchy's theme live.
-fastframe-theme = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1" }
+fastframe-theme = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1", optional = true }
 # Logs to stderr and a per-run file, and records panics without their payload.
 fastframe-log = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1" }
 # The tray item: StatusNotifier on Linux, tray-icon on Windows and macOS.
 fastframe-tray = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1" }
 # Keeps ZapFast running without a window, remembers its geometry, recovers it
 # off screen, and brings it forward on niri.
-fastframe-shell = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1" }
+fastframe-shell = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1", optional = true }
 # Window chrome: centres the macOS traffic lights on ZapFast's own header and
 # lets its headers move the window.
-fastframe-titlebar = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1" }
+fastframe-titlebar = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1", optional = true }
 # One running copy per user: the lock, and the channel a second launch uses.
 fastframe-instance = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1" }
 # The wheel step, and on Linux touchpad scale, glide and axis lock.
-fastframe-scroll = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1" }
+fastframe-scroll = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1", optional = true }
 # The desktop entry name (Flatpak-aware), the GNOME check, and GNOME's clock
 # format through the desktop portal.
 fastframe-desktop = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1" }
@@ -282,29 +283,29 @@ libc = "0.2"
 linuxvideo = "0.3.5"
 # Tells a Wayland window, which the compositor can blur behind the Messages
 # theme, from an X11 one. Already in the tree through eframe.
-raw-window-handle = "0.6"
+raw-window-handle = { version = "0.6", optional = true }
 # Keeps the clipboard pasteable once the window closes to the tray: the
 # selection belongs to winit's event loop, which eframe keeps for the next
 # window without dispatching it (see src/clipboard.rs). Pure Rust, no native
 # library.
-wl-clipboard-rs = "0.9"
+wl-clipboard-rs = { version = "0.9", optional = true }
 # winit draws the window's frame itself where the compositor will not, as
 # GNOME on Wayland does not: Adwaita-style rounded corners, title and
 # buttons. eframe without its default features leaves winit with only a
 # plain, square grey frame there (#397). The feature applies to eframe's
 # winit, the fork in [patch.crates-io].
-winit = { version = "0.30", default-features = false, features = ["wayland-csd-adwaita"] }
+winit = { version = "0.30", default-features = false, features = ["wayland-csd-adwaita"], optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
 # The application menu bar, built with tray-icon's muda at the version
 # fastframe-tray uses.
-tray-icon = { version = "0.25", default-features = false }
+tray-icon = { version = "0.25", default-features = false, optional = true }
 # AppKit calls for the application menus and editing commands on the main thread.
-objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSAppearance", "NSApplication", "NSGraphics", "NSResponder", "NSText", "NSView", "NSVisualEffectView", "NSWindow"] }
+objc2 = { version = "0.6", optional = true }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSAppearance", "NSApplication", "NSGraphics", "NSResponder", "NSText", "NSView", "NSVisualEffectView", "NSWindow"], optional = true }
 # Reaches the window behind eframe's view, for the Messages theme's vibrancy.
-raw-window-handle = "0.6"
+raw-window-handle = { version = "0.6", optional = true }
 # Reads the locale's clock format.
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSDateFormatter", "NSFormatter", "NSLocale", "NSString"] }
 # The camera for video calls, through AVFoundation.
@@ -315,7 +316,7 @@ windows-native-keyring-store = { version = "1.1", default-features = false }
 # Locale calls, and the taskbar's light or dark style.
 windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_Globalization", "Win32_System_Registry"] }
 # Accesses the native window handle for the Messages theme's Mica backdrop.
-raw-window-handle = "0.6"
+raw-window-handle = { version = "0.6", optional = true }
 # The camera for video calls, through Media Foundation.
 nokhwa = { version = "0.10.11", default-features = false, features = ["input-msmf"] }
 # Pauses other apps' media through the system media transport controls while
@@ -341,13 +342,43 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["NSMenu
 [[test]]
 name = "macos_menu"
 harness = false
+required-features = ["egui-ui"]
+
+# Runs the `zapfast` executable.
+[[test]]
+name = "update_flags"
+required-features = ["egui-ui"]
 
 [features]
 default = ["egui-ui"]
 # The egui interface and everything that draws it. Without it the library is
 # the backend alone (the WhatsApp worker, the archive, the model and the
 # settings), for another interface to build on.
-egui-ui = ["dep:bytemuck", "dep:ecolor"]
+egui-ui = [
+    "dep:bytemuck",
+    "dep:ecolor",
+    "dep:eframe",
+    "dep:egui",
+    "dep:egui_extras",
+    "dep:skrifa",
+    "dep:unicode-bidi",
+    "dep:qrcode",
+    "dep:arboard",
+    "dep:fastframe-icons",
+    "dep:fastframe-fonts",
+    "dep:fastframe-emoji",
+    "dep:fastframe-text",
+    "dep:fastframe-theme",
+    "dep:fastframe-shell",
+    "dep:fastframe-titlebar",
+    "dep:fastframe-scroll",
+    "dep:raw-window-handle",
+    "dep:wl-clipboard-rs",
+    "dep:winit",
+    "dep:tray-icon",
+    "dep:objc2",
+    "dep:objc2-app-kit",
+]
 # Sample data, layout tests, and screenshots. Not used in release builds.
 demo = ["egui-ui"]
 

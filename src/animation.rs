@@ -4,17 +4,28 @@
 //! other MP4 codecs use `ffmpeg` when available. Idle animations are removed
 //! from memory, and a paused one keeps only its first frame, the poster, until
 //! it plays.
+//!
+//! Without the `egui-ui` feature only the decoders are built, for the backend's
+//! posters: the player draws through egui.
+#![cfg_attr(not(feature = "egui-ui"), allow(dead_code))]
 
+#[cfg(feature = "egui-ui")]
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(feature = "egui-ui")]
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
+#[cfg(feature = "egui-ui")]
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(feature = "egui-ui")]
+use std::time::Instant;
 
+#[cfg(feature = "egui-ui")]
 use egui::{ColorImage, TextureHandle, TextureOptions};
 
-#[cfg(test)]
+#[cfg(all(test, feature = "egui-ui"))]
 use crate::pixels::Pixel;
 use crate::pixels::PixelImage;
 
@@ -51,6 +62,7 @@ struct Decoded {
     frames: Vec<(PixelImage, Duration)>,
 }
 
+#[cfg(feature = "egui-ui")]
 struct Playing {
     frames: Vec<(TextureHandle, Duration)>,
     total: Duration,
@@ -69,6 +81,7 @@ struct Playing {
     upgrading: bool,
 }
 
+#[cfg(feature = "egui-ui")]
 enum Entry {
     Decoding,
     Failed,
@@ -77,6 +90,7 @@ enum Entry {
 
 /// Resident animations plus the bookkeeping the eviction sweep needs.
 #[derive(Default)]
+#[cfg(feature = "egui-ui")]
 struct Animations {
     entries: HashMap<PathBuf, Entry>,
     /// Paths a sweep found idle. A `frame` call for the path clears the mark,
@@ -88,20 +102,25 @@ struct Animations {
 }
 
 #[derive(Clone, Default)]
+#[cfg(feature = "egui-ui")]
 struct Cache(Arc<Mutex<Animations>>);
 
 /// Result returned by a decoder thread, and whether it holds every frame
 /// rather than only the poster.
+#[cfg(feature = "egui-ui")]
 type Delivery = (PathBuf, Option<Decoded>, bool);
 
 /// Decoded frames waiting for texture upload.
 #[derive(Clone, Default)]
+#[cfg(feature = "egui-ui")]
 struct Inbox(Arc<Mutex<Vec<Delivery>>>);
 
+#[cfg(feature = "egui-ui")]
 fn cache(ctx: &egui::Context) -> Cache {
     cache_for(ctx, egui::Id::new("default"))
 }
 
+#[cfg(feature = "egui-ui")]
 fn cache_for(ctx: &egui::Context, scope: egui::Id) -> Cache {
     ctx.data_mut(|data| {
         data.get_temp_mut_or_default::<Cache>(egui::Id::new(("animations", scope)))
@@ -110,10 +129,12 @@ fn cache_for(ctx: &egui::Context, scope: egui::Id) -> Cache {
 }
 
 #[cfg(test)]
+#[cfg(feature = "egui-ui")]
 fn inbox(ctx: &egui::Context) -> Inbox {
     inbox_for(ctx, egui::Id::new("default"))
 }
 
+#[cfg(feature = "egui-ui")]
 fn inbox_for(ctx: &egui::Context, scope: egui::Id) -> Inbox {
     ctx.data_mut(|data| {
         data.get_temp_mut_or_default::<Inbox>(egui::Id::new(("animation-inbox", scope)))
@@ -122,6 +143,7 @@ fn inbox_for(ctx: &egui::Context, scope: egui::Id) -> Inbox {
 }
 
 /// Current display state for a media file.
+#[cfg(feature = "egui-ui")]
 pub enum Frame {
     /// Current animation frame.
     Ready(TextureHandle),
@@ -135,11 +157,13 @@ pub enum Frame {
 ///
 /// A visible but paused animation returns its first frame without scheduling
 /// another repaint. This keeps animated media idle until playback is wanted.
+#[cfg(feature = "egui-ui")]
 pub fn frame(ui: &egui::Ui, path: &Path, rect: egui::Rect, animate: bool) -> Frame {
     frame_with_cache(ui, path, rect, animate, egui::Id::new("default"))
 }
 
 /// Returns an animation frame from a separate cache.
+#[cfg(feature = "egui-ui")]
 pub fn frame_with_cache(
     ui: &egui::Ui,
     path: &Path,
@@ -150,6 +174,7 @@ pub fn frame_with_cache(
     frame_inner(ui, path, rect, animate, scope)
 }
 
+#[cfg(feature = "egui-ui")]
 fn frame_inner(
     ui: &egui::Ui,
     path: &Path,
@@ -335,6 +360,7 @@ fn frame_inner(
 
 /// Forgets what is known of `path`, a failure included, so the file there is
 /// decoded afresh the next time it is drawn.
+#[cfg(feature = "egui-ui")]
 pub fn forget(ctx: &egui::Context, path: &Path) {
     let cache = cache(ctx);
     let mut animations = cache.0.lock().unwrap_or_else(|p| p.into_inner());
@@ -347,6 +373,7 @@ pub fn forget(ctx: &egui::Context, path: &Path) {
 /// otherwise keep its textures. A decode still running delivers to the inbox
 /// and is dropped by the next call, which is why a closed view calls this on
 /// every pass. It takes two uncontended locks when there is nothing to drop.
+#[cfg(feature = "egui-ui")]
 pub fn release(ctx: &egui::Context, scope: egui::Id) {
     let cache = cache_for(ctx, scope);
     let inbox = inbox_for(ctx, scope);
@@ -358,6 +385,7 @@ pub fn release(ctx: &egui::Context, scope: egui::Id) {
 
 /// How many files a scope holds, with one placed there first when `seed`.
 #[cfg(test)]
+#[cfg(feature = "egui-ui")]
 pub(crate) fn resident(ctx: &egui::Context, scope: egui::Id, seed: Option<&Path>) -> usize {
     let cache = cache_for(ctx, scope);
     let mut animations = cache.0.lock().unwrap_or_else(|p| p.into_inner());
@@ -368,6 +396,7 @@ pub(crate) fn resident(ctx: &egui::Context, scope: egui::Id, seed: Option<&Path>
 }
 
 /// Whether a decoder thread could be started.
+#[cfg(feature = "egui-ui")]
 enum Start {
     Started,
     /// Every decoder slot is taken; try again shortly.
@@ -377,6 +406,7 @@ enum Start {
 
 /// Decodes `path` on a thread, every frame when `all` and otherwise only the
 /// poster, and delivers the result to `inbox`.
+#[cfg(feature = "egui-ui")]
 fn start_decode(ctx: &egui::Context, inbox: &Inbox, path: &Path, all: bool) -> Start {
     if DECODING.load(std::sync::atomic::Ordering::Acquire) >= MAX_DECODERS {
         return Start::Busy;
@@ -740,7 +770,7 @@ pub(crate) fn poster(bytes: &[u8]) -> Option<Poster> {
 }
 
 /// Frame `index` of a video (or its last, if shorter), for demo posters.
-#[cfg(any(test, feature = "demo"))]
+#[cfg(all(feature = "egui-ui", any(test, feature = "demo")))]
 pub(crate) fn video_frame(path: &Path, index: usize) -> Option<ColorImage> {
     decode_video(path, index + 1)?
         .frames
@@ -751,6 +781,7 @@ pub(crate) fn video_frame(path: &Path, index: usize) -> Option<ColorImage> {
 /// Trims animations until the resident frames fit the budget, sparing the
 /// one being drawn and any animation still playing on screen. Paused entries
 /// lose their decoded frames; unseen entries are evicted.
+#[cfg(feature = "egui-ui")]
 fn enforce_budget(animations: &mut Animations, path: &Path, now: Instant) {
     let mut resident: usize = animations
         .entries
@@ -930,7 +961,7 @@ fn decode_with_ffmpeg(path: &Path, limit: usize) -> Option<Decoded> {
     (!frames.is_empty()).then_some(Decoded { frames })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "egui-ui"))]
 mod tests {
     #[test]
     fn clipped_animation_does_not_decode_or_schedule_frames() {
@@ -2146,7 +2177,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "egui-ui"))]
 mod probe {
     use super::*;
 

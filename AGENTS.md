@@ -127,6 +127,14 @@ protocol. These notes are for coding agents and new contributors.
   connection. `write_batching::history_write_bench` (ignored) measures it.
 - `src/model.rs` holds the app's own types. Views never touch a protobuf;
   the worker translates in `classify()` and `parse_conversation()`.
+- The `egui-ui` feature, on by default, is the egui interface: `app`, `ui`,
+  `account`, `theme` and the modules that only draw for it. Without it the
+  library is the backend (`backend`, `archive`, `model`, `settings`, `paths`,
+  `calls`, `notify`, ...) for another interface to build on, and
+  `cargo check --lib --no-default-features` must keep passing. Keep egui types
+  out of those modules: pictures cross as `pixels::PixelImage` (a move to
+  egui's `ColorImage` copies nothing), the window is woken through
+  `backend::Waker`, and a mixed module gates only its egui items.
 - A motion photo is a photo plus a short clip sent as a second message in an
   `associatedChildMessage` wrapper. The clip is never a message: its bare
   video message goes to the archive's `motion_clips`, keyed by chat, photo id,

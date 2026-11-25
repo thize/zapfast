@@ -82,12 +82,12 @@ fn attempts(path: &Path) -> Vec<Attempt<'_>> {
 /// double-forked and reaped. Every link, from message bodies to egui's own
 /// `Hyperlink`, goes through it. macOS and Windows open links through the
 /// system without a child process, so they keep eframe's own handling.
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(feature = "egui-ui", unix, not(target_os = "macos")))]
 pub struct DetachedLinks {
     open: fn(&str) -> std::io::Result<()>,
 }
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(feature = "egui-ui", unix, not(target_os = "macos")))]
 impl Default for DetachedLinks {
     fn default() -> Self {
         Self {
@@ -96,7 +96,7 @@ impl Default for DetachedLinks {
     }
 }
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(feature = "egui-ui", unix, not(target_os = "macos")))]
 impl egui::plugin::Plugin for DetachedLinks {
     fn debug_name(&self) -> &'static str {
         "zapfast-links"
@@ -240,7 +240,7 @@ mod tests {
         );
     }
 
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(feature = "egui-ui", unix, not(target_os = "macos")))]
     #[test]
     fn links_are_opened_detached_instead_of_by_eframe() {
         use std::sync::Mutex;
