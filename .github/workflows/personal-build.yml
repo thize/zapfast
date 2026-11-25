@@ -142,6 +142,10 @@ jobs:
     runs-on: macos-15-intel
     env:
       VERSION: ${{ needs.plan.outputs.version }}
+      # The Intel runner's Homebrew has a libwebp in /usr/local, which
+      # libwebp-sys2 then links by name and the linker cannot find; build
+      # the bundled one, as the Apple silicon runner upstream uses does.
+      LIBWEBP_SYS_STATIC: "1"
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -299,6 +303,10 @@ jobs:
     # As upstream: built in Debian 12, so the binary needs glibc 2.36 or
     # newer and runs on Debian 12, Ubuntu 22.10, Fedora 37 and later.
     container: debian:12
+    # The image's sh is dash, which has no pipefail.
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
