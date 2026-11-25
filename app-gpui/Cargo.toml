@@ -1,0 +1,73 @@
+[package]
+name = "zapfast-gpui"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+description = "ZapFast's WhatsApp client on GPUI (phase 2: the app skeleton)"
+
+# A workspace of its own, with its own Cargo.lock: the root package and its
+# Cargo.lock stay as the upstream has them, so the weekly merge stays easy.
+[workspace]
+
+[lib]
+name = "zapfast_gpui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "zapfast-gpui"
+path = "src/main.rs"
+
+[features]
+default = ["snapshot"]
+# Window::render_to_image only exists behind GPUI's test-support feature
+# (gpui-pre src/window.rs:3255), so --snapshot needs it in the normal build.
+snapshot = ["gpui/test-support", "gpui_platform/test-support"]
+
+[dependencies]
+# The backend, without egui: the same crate `cargo check --lib
+# --no-default-features` checks at the root.
+zapfast = { path = "..", default-features = false }
+# The GPUI set the spike validated, pinned exactly (see spikes/gpui-chat).
+gpui = { package = "gpui-pre", version = "=0.3.14" }
+# runtime_shaders compiles the Metal shaders at launch: the Mac has no Metal
+# Toolchain (gpui-pre-apple build.rs shells out to `xcrun metal` otherwise).
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.14", features = ["font-kit", "runtime_shaders"] }
+gpui-component = "=0.11.0"
+# The login QR is drawn by GPUI from the code's modules, as the root does.
+qrcode = { version = "0.14", default-features = false }
+# The channel that carries the backend's wake-ups to GPUI's foreground
+# executor without polling.
+futures = "0.3"
+log = "0.4"
+unicode-segmentation = "1"
+# ZapFast's platform crates, at the tag the root declares. This app opens its
+# own single-instance slot and login item through them instead of going
+# through zapfast's modules, which carry ZapFast's names.
+fastframe-instance = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1" }
+fastframe-autostart = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1" }
+directories = "6"
+
+[dev-dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.14", features = ["test-support"] }
+tempfile = "3"
+
+# The root's profiles, so a release build of this app is built as ZapFast is.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+# GPUI is unusably slow unoptimized (text shaping, layout), which makes the
+# benchmarks measure the debug profile rather than the framework. Still the dev
+# profile (no --release): dependencies are optimized, this crate lightly.
+[profile.dev]
+debug = "line-tables-only"
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.dev.build-override]
+debug = "line-tables-only"
