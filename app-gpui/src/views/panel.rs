@@ -3,6 +3,7 @@
 
 use super::composer::{Composer, Submit};
 use super::conversation::{ConversationView, ConversationViewEvent, ReplyDraft};
+use super::viewer::ViewerItem;
 use crate::bench::Stats;
 use crate::state::{ChatList, Conversation, Store};
 use crate::ui::{avatar_picture as avatar, icon, name_color, palette};
@@ -14,6 +15,18 @@ use gpui::{
 };
 use std::rc::Rc;
 use zapfast::model::{ChatId, ChatKind, ReplyTarget};
+
+/// What the panel asks of the window around it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PanelEvent {
+    /// Open the picture viewer on `items[index]`.
+    OpenViewer {
+        items: Vec<ViewerItem>,
+        index: usize,
+    },
+}
+
+impl gpui::EventEmitter<PanelEvent> for ChatPanel {}
 
 pub struct ChatPanel {
     store: Entity<Store>,
@@ -58,7 +71,12 @@ impl ChatPanel {
                         .update(cx, |composer, cx| composer.focus(window, cx));
                     cx.notify();
                 }
-                ConversationViewEvent::OpenMedia { .. } => {}
+                ConversationViewEvent::OpenMedia { message, .. } => {
+                    let (items, at) = this.conversation.read(cx).pictures(message);
+                    if let Some(index) = at {
+                        cx.emit(PanelEvent::OpenViewer { items, index });
+                    }
+                }
             },
         );
         let on_chats = cx.observe(&chats, |_, _, cx| cx.notify());

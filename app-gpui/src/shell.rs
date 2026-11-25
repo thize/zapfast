@@ -18,7 +18,8 @@ use crate::ui::{ActivePalette, palette};
 use crate::views::avatar::Avatars;
 use crate::views::chat_list::ChatListView;
 use crate::views::login::LoginView;
-use crate::views::panel::ChatPanel;
+use crate::views::panel::{ChatPanel, PanelEvent};
+use crate::views::viewer::{Viewer, ViewerEvent, ViewerItem};
 
 pub const SIDEBAR_WIDTH: f32 = 400.0;
 
@@ -66,6 +67,11 @@ pub struct Shell {
     login: Entity<LoginView>,
     list: Entity<ChatListView>,
     panel: Option<Entity<ChatPanel>>,
+    /// The picture viewer, over the whole window while it is open.
+    viewer: Option<Entity<Viewer>>,
+    /// What listens to the open panel and the viewer.
+    _panel_events: Option<Subscription>,
+    _viewer_events: Option<Subscription>,
     stats: Rc<Stats>,
     focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
@@ -129,6 +135,9 @@ impl Shell {
             login,
             list,
             panel: None,
+            viewer: None,
+            _panel_events: None,
+            _viewer_events: None,
             stats,
             focus: cx.focus_handle(),
             _subscriptions: subscriptions,
@@ -148,11 +157,55 @@ impl Shell {
                 (self.store.clone(), self.avatars.clone(), self.stats.clone());
             cx.new(|cx| ChatPanel::new(store, conversation, avatars, stats, window, cx))
         });
+        self.viewer = None;
+        self._viewer_events = None;
+        self._panel_events = self.panel.as_ref().map(|panel| {
+            cx.subscribe_in(panel, window, |this, _, event: &PanelEvent, window, cx| {
+                let PanelEvent::OpenViewer { items, index } = event;
+                this.open_viewer(items.clone(), *index, window, cx);
+            })
+        });
         if let Some(panel) = &self.panel {
             let handle = panel.read(cx).focus_handle(cx);
             window.focus(&handle, cx);
         }
         cx.notify();
+    }
+
+    /// Opens the picture viewer over the window.
+    pub fn open_viewer(
+        &mut self,
+        items: Vec<ViewerItem>,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let viewer = cx.new(|cx| Viewer::new(items, index, cx));
+        self._viewer_events = Some(cx.subscribe_in(
+            &viewer,
+            window,
+            |this, _, ViewerEvent::Close, window, cx| this.close_viewer(window, cx),
+        ));
+        window.focus(&viewer.read(cx).focus_handle(cx), cx);
+        self.viewer = Some(viewer);
+        cx.notify();
+    }
+
+    /// Closes the picture viewer, and the chat has the keys again.
+    pub fn close_viewer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.viewer.take().is_none() {
+            return;
+        }
+        self._viewer_events = None;
+        if let Some(panel) = &self.panel {
+            let handle = panel.read(cx).focus_handle(cx);
+            window.focus(&handle, cx);
+        }
+        cx.notify();
+    }
+
+    pub fn viewer(&self) -> Option<&Entity<Viewer>> {
+        self.viewer.as_ref()
     }
 
     pub fn stats(&self) -> Rc<Stats> {
@@ -219,6 +272,7 @@ impl Render for Shell {
         };
         div()
             .size_full()
+            .relative()
             .flex()
             .key_context("Shell")
             .track_focus(&self.focus)
@@ -233,6 +287,7 @@ impl Render for Shell {
                     .child(self.list.clone()),
             )
             .child(div().flex_1().min_w_0().h_full().child(right))
+            .children(self.viewer.clone())
             .into_any_element()
     }
 }
@@ -243,6 +298,62 @@ mod tests {
     use crate::demo::{self, ANA, PAGE};
     use crate::views::testing::launch;
     use gpui::TestAppContext;
+
+    #[gpui::test]
+    fn a_picture_opens_in_the_viewer_zooms_and_escape_closes_it(cx: &mut TestAppContext) {
+        let demo = launch(cx, true);
+        let store = demo.store.clone();
+        let (shell, cx) = cx.add_window_view({
+            let store = store.clone();
+            move |window, cx| Shell::new(store, Stats::new(), Some(true), window, cx)
+        });
+        store.update(cx, |store, cx| store.open_chat(Some(ANA.to_owned()), cx));
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let view = shell
+            .read_with(cx, |shell, cx| {
+                shell
+                    .panel()
+                    .map(|panel| panel.read(cx).conversation().clone())
+            })
+            .expect("the panel opened");
+        let photo = view
+            .read_with(cx, |view, _| {
+                (0..view.message_count()).find(|&i| {
+                    matches!(
+                        view.message(i).message.content,
+                        zapfast::model::Content::Image { .. }
+                    )
+                })
+            })
+            .expect("a photo in the first page");
+        // The first click downloads the picture, the second opens it.
+        view.update(cx, |view, cx| view.media_clicked(photo, cx));
+        cx.run_until_parked();
+        assert!(shell.read_with(cx, |shell, _| shell.viewer().is_none()));
+        view.update(cx, |view, cx| view.media_clicked(photo, cx));
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let viewer = shell
+            .read_with(cx, |shell, _| shell.viewer().cloned())
+            .expect("the viewer opened");
+        assert_eq!(viewer.read_with(cx, |v, _| v.count()), 1);
+
+        cx.update(|window, cx| {
+            viewer.update(cx, |viewer, cx| {
+                viewer.zoom_by(crate::views::viewer::ZOOM_STEP, None, window, cx)
+            })
+        });
+        assert_eq!(
+            viewer.read_with(cx, |v, _| v.zoom().scale),
+            crate::views::viewer::ZOOM_STEP
+        );
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert!(shell.read_with(cx, |shell, _| shell.viewer().is_none()));
+    }
 
     #[gpui::test]
     fn login_gives_way_to_the_chats_once_linked_and_a_chat_opens_and_closes(

@@ -5,6 +5,7 @@
 
 use super::media::{self, BubbleMedia};
 use super::selectable::{self, Registry, SelectableText, TextColors};
+use super::viewer::ViewerItem;
 use crate::assets::WALLPAPER_TILE;
 use crate::bench::Stats;
 use crate::palette::Palette;
@@ -688,6 +689,52 @@ impl ConversationView {
     }
 
     // ----- media -------------------------------------------------------------
+
+    /// The first picture of the chat that is loaded, for snapshots.
+    pub fn first_picture(&self) -> Option<usize> {
+        self.views
+            .iter()
+            .position(|view| matches!(view.message.content, zapfast::model::Content::Image { .. }))
+    }
+
+    /// Closes the message menu, for snapshots.
+    pub fn close_menu(&mut self, cx: &mut Context<Self>) {
+        if self.menu.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// The chat's pictures that have their file, oldest first, with the place
+    /// of message `message` among them (`None` when it is not one).
+    pub fn pictures(&self, message: &str) -> (Vec<ViewerItem>, Option<usize>) {
+        let mut at = None;
+        let items = self
+            .views
+            .iter()
+            .filter_map(|view| {
+                let zapfast::model::Content::Image { caption, media, .. } = &view.message.content
+                else {
+                    return None;
+                };
+                let path = media.path.clone()?;
+                Some((view, caption.clone(), path))
+            })
+            .enumerate()
+            .map(|(place, (view, caption, path))| {
+                if view.id() == message {
+                    at = Some(place);
+                }
+                ViewerItem {
+                    message: view.id().to_owned(),
+                    path,
+                    caption: caption.filter(|c| !c.is_empty()),
+                    sender: view.sender.clone(),
+                    timestamp: view.timestamp(),
+                }
+            })
+            .collect();
+        (items, at)
+    }
 
     /// Works out which message rows are on screen, from the layout just
     /// painted: their media plays, and what still has no file is asked for.

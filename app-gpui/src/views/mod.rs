@@ -18,6 +18,7 @@ pub mod panel;
 pub mod selectable;
 pub mod selection;
 pub mod timefmt;
+pub mod viewer;
 
 #[cfg(test)]
 pub(crate) mod testing;

@@ -57,6 +57,9 @@ const FILES: &[(&str, &[u8])] = &[
     local!("volume-x.svg"),
     local!("copy.svg"),
     local!("play.svg"),
+    local!("zoom-in.svg"),
+    local!("zoom-out.svg"),
+    local!("chevron-right.svg"),
     zapfast!("qr-code.svg"),
     // The chat wallpaper and the app logo.
     (

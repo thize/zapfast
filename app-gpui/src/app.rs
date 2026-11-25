@@ -149,6 +149,7 @@ fn boot(cli: Cli, real: Option<Real>, cx: &mut App) {
         ),
         KeyBinding::new("escape", ClearSelection, Some("Conversation")),
     ]);
+    crate::views::viewer::bind_keys(cx);
 
     // The state, fed by the backend, or by the demo through the same path.
     let (mut bridge, injector, instance) = match real {
@@ -316,6 +317,9 @@ fn snapshot(
             "chat-selection",
             "chat-reply",
             "chat-reactions",
+            "chat-photo",
+            "viewer",
+            "viewer-zoom",
         ] {
             cx.update(|cx| snapshot_step(name, window, &injector, cx));
             cx.background_executor()
@@ -414,6 +418,37 @@ fn snapshot_step(
                     let target = view.message_count().saturating_sub(3);
                     view.show_menu(target, MenuKind::Reactions, cx);
                 });
+            }
+        }
+        // The photo is asked for (its file arrives while the shot waits), then
+        // opened in the viewer, then zoomed in on the middle.
+        "chat-photo" => {
+            if let Some(view) = conversation {
+                view.update(cx, |view, cx| {
+                    view.set_selection(None, cx);
+                    view.close_menu(cx);
+                    if let Some(photo) = view.first_picture() {
+                        view.media_clicked(photo, cx);
+                    }
+                });
+            }
+        }
+        "viewer" => {
+            if let Some(view) = conversation {
+                view.update(cx, |view, cx| {
+                    if let Some(photo) = view.first_picture() {
+                        view.media_clicked(photo, cx);
+                    }
+                });
+            }
+        }
+        "viewer-zoom" => {
+            if let Some(viewer) = shell.read(cx).viewer().cloned() {
+                window
+                    .update(cx, |_, window, cx| {
+                        viewer.update(cx, |viewer, cx| viewer.zoom_by(3.0, None, window, cx));
+                    })
+                    .ok();
             }
         }
         _ => {}
