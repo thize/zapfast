@@ -833,7 +833,7 @@ pub enum Command {
     /// Internal: the bounded preview produced by a blocking worker.
     PicturePreviewReady {
         target: crate::app::AttachmentId,
-        image: Option<egui::ColorImage>,
+        image: Option<crate::pixels::PixelImage>,
     },
     /// Reads a staged picture's size, so the cropper can open on it.
     InspectPicture {
@@ -1411,7 +1411,7 @@ pub enum Event {
     /// Bounded preview pixels; only the UI uploads the texture.
     PicturePreviewReady {
         target: crate::app::AttachmentId,
-        image: Option<egui::ColorImage>,
+        image: Option<crate::pixels::PixelImage>,
     },
     /// A staged picture's size, so the cropper can open on it.
     PictureInspected {
@@ -1583,8 +1583,8 @@ pub enum Event {
     CallLog(Vec<Message>),
     /// One video frame for the call screen: our own preview, the peer's picture, or both.
     CallVideo {
-        local: Option<Arc<egui::ColorImage>>,
-        remote: Option<Arc<egui::ColorImage>>,
+        local: Option<Arc<crate::pixels::PixelImage>>,
+        remote: Option<Arc<crate::pixels::PixelImage>>,
         /// Whose picture `remote` is on a group call, by chat id; `None` for the peer of a
         /// one-to-one call.
         from: Option<String>,

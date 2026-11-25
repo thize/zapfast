@@ -122,8 +122,8 @@ impl Clip {
             let (path, side) = (&self.path, self.side);
             let frames = self.frames.get_or_insert_with(|| Frames::open(path, side));
             match frames.next() {
-                Some(frame) => {
-                    self.next = Some(frame);
+                Some((at, image)) => {
+                    self.next = Some((at, image.into()));
                     self.decoded = true;
                 }
                 None => {

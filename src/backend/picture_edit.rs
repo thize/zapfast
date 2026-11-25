@@ -5,6 +5,7 @@ use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use crate::model::{PictureCrop, PictureSource};
+use crate::pixels::{Pixel, PixelImage};
 
 /// Quality of an opaque picture written back. The send path passes a JPEG
 /// through untouched, so this is the only lossy step for one.
@@ -21,7 +22,7 @@ pub struct Edited {
 pub(crate) const PREVIEW_SIDE: usize = 1024;
 
 /// Resize pasted pixels on a blocking worker, premultiplying transparent colours first.
-pub(crate) fn preview(width: usize, height: usize, rgba: &[u8]) -> Option<egui::ColorImage> {
+pub(crate) fn preview(width: usize, height: usize, rgba: &[u8]) -> Option<PixelImage> {
     let (width, height) = (u32::try_from(width).ok()?, u32::try_from(height).ok()?);
     if width == 0 || height == 0 {
         return None;
@@ -31,8 +32,8 @@ pub(crate) fn preview(width: usize, height: usize, rgba: &[u8]) -> Option<egui::
     let mut pixels = Cow::Borrowed(rgba);
     if rgba.as_chunks::<4>().0.iter().any(|pixel| pixel[3] != 255) {
         for pixel in pixels.to_mut().as_chunks_mut::<4>().0 {
-            *pixel = egui::Color32::from_rgba_unmultiplied(pixel[0], pixel[1], pixel[2], pixel[3])
-                .to_array();
+            *pixel =
+                Pixel::from_rgba_unmultiplied(pixel[0], pixel[1], pixel[2], pixel[3]).to_array();
         }
     }
     let picture = image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(width, height, &*pixels)?;
@@ -42,7 +43,7 @@ pub(crate) fn preview(width: usize, height: usize, rgba: &[u8]) -> Option<egui::
         ((height as f32 * scale) as u32).max(1),
     );
     let small = image::imageops::resize(&picture, w, h, image::imageops::FilterType::Triangle);
-    Some(egui::ColorImage::from_rgba_premultiplied(
+    Some(PixelImage::from_rgba_premultiplied(
         [w as usize, h as usize],
         small.as_raw(),
     ))
@@ -172,7 +173,7 @@ mod tests {
             assert_eq!(result.size, expected);
             assert_eq!(
                 result.pixels[0],
-                egui::Color32::from_rgba_unmultiplied(80, 120, 180, 100)
+                Pixel::from_rgba_unmultiplied(80, 120, 180, 100)
             );
             assert_eq!(&pixels[..4], &[80, 120, 180, 100]);
         }

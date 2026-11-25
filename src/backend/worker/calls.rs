@@ -1527,7 +1527,10 @@ mod tests {
         );
 
         // A member's picture reaches the window under their chat id, and turns their tile.
-        let image = std::sync::Arc::new(egui::ColorImage::filled([2, 2], egui::Color32::BLACK));
+        let image = std::sync::Arc::new(crate::pixels::PixelImage::filled(
+            [2, 2],
+            crate::pixels::Pixel::from_rgb(0, 0, 0),
+        ));
         worker.call_frame(VideoTick::RemoteFrom {
             sender: "200000000000001:5@lid".parse().unwrap(),
             image,

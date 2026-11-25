@@ -8,8 +8,9 @@ use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
 
-use egui::ColorImage;
 use rasterlottie::{Animation, RenderConfig, Renderer, Rgba8};
+
+use crate::pixels::PixelImage;
 
 const MAX_ARCHIVE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_JSON_BYTES: u64 = 2 * 1024 * 1024;
@@ -54,7 +55,7 @@ fn animation_json(path: &Path) -> Option<String> {
 
 /// Rasterize at most `requested` frames. One requested frame is the poster;
 /// the shared animation cache only requests the rest during actual playback.
-pub(crate) fn decode(path: &Path, requested: usize) -> Option<Vec<(ColorImage, Duration)>> {
+pub(crate) fn decode(path: &Path, requested: usize) -> Option<Vec<(PixelImage, Duration)>> {
     if requested == 0 {
         return None;
     }
@@ -91,9 +92,9 @@ pub(crate) fn decode(path: &Path, requested: usize) -> Option<Vec<(ColorImage, D
     for index in 0..count {
         let at = animation.in_point + index as f32 * animation.duration_frames() / count as f32;
         let raster = prepared.render_frame(at, config).ok()?;
-        // rasterlottie uses premultiplied RGBA pixels, as egui expects here.
+        // rasterlottie uses premultiplied RGBA pixels, as `PixelImage` holds them.
         frames.push((
-            ColorImage::from_rgba_premultiplied(
+            PixelImage::from_rgba_premultiplied(
                 [raster.width as usize, raster.height as usize],
                 &raster.pixels,
             ),

@@ -14,6 +14,10 @@ use std::time::{Duration, Instant};
 
 use egui::{ColorImage, TextureHandle, TextureOptions};
 
+#[cfg(test)]
+use crate::pixels::Pixel;
+use crate::pixels::PixelImage;
+
 /// Maximum frame width uploaded to the GPU.
 const MAX_WIDTH: u32 = 320;
 /// Maximum frames kept per animation.
@@ -44,7 +48,7 @@ impl Drop for DecodeSlot {
 }
 
 struct Decoded {
-    frames: Vec<(ColorImage, Duration)>,
+    frames: Vec<(PixelImage, Duration)>,
 }
 
 struct Playing {
@@ -187,7 +191,10 @@ fn frame_inner(
                     .map(|(index, (image, delay))| {
                         total += delay;
                         let name = format!("{}#{index}", arrived_path.display());
-                        (ctx.load_texture(name, image, TextureOptions::LINEAR), delay)
+                        (
+                            ctx.load_texture(name, ColorImage::from(image), TextureOptions::LINEAR),
+                            delay,
+                        )
                     })
                     .collect();
                 let animating = complete && frames.len() > 1;
@@ -499,7 +506,7 @@ fn decode_still(path: &Path) -> Option<Decoded> {
     image.apply_orientation(orientation);
     let image = image.to_rgba8();
     Some(Decoded {
-        frames: vec![(to_color_image(&image), Duration::ZERO)],
+        frames: vec![(to_pixel_image(&image), Duration::ZERO)],
     })
 }
 
@@ -520,7 +527,7 @@ fn decode_image(path: &Path, extension: &str, limit: usize) -> Option<Decoded> {
         let (numerator, denominator) = frame.delay().numer_denom_ms();
         let delay = Duration::from_millis(u64::from(numerator / denominator.max(1)).max(20));
         let image = frame.into_buffer();
-        decoded.push((to_color_image(&image), delay));
+        decoded.push((to_pixel_image(&image), delay));
     }
     Some(Decoded { frames: decoded })
 }
@@ -549,7 +556,7 @@ fn decode_webp(path: &Path, limit: usize) -> Option<Decoded> {
         } else {
             image
         };
-        decoded.push((to_color_image(&image), Duration::from_millis(delay)));
+        decoded.push((to_pixel_image(&image), Duration::from_millis(delay)));
     }
     // A single frame is a still for the static-image path, unless the file
     // announces an animation: callers draw such a file only through this
@@ -561,7 +568,7 @@ fn decode_webp(path: &Path, limit: usize) -> Option<Decoded> {
     Some(Decoded { frames: decoded })
 }
 
-fn to_color_image(image: &image::RgbaImage) -> ColorImage {
+fn to_pixel_image(image: &image::RgbaImage) -> PixelImage {
     let image = if image.width() > MAX_WIDTH {
         let height = (image.height() * MAX_WIDTH / image.width()).max(1);
         image::imageops::resize(
@@ -573,7 +580,7 @@ fn to_color_image(image: &image::RgbaImage) -> ColorImage {
     } else {
         image.clone()
     };
-    ColorImage::from_rgba_unmultiplied(
+    PixelImage::from_rgba_unmultiplied(
         [image.width() as usize, image.height() as usize],
         image.as_raw(),
     )
@@ -738,7 +745,7 @@ pub(crate) fn video_frame(path: &Path, index: usize) -> Option<ColorImage> {
     decode_video(path, index + 1)?
         .frames
         .pop()
-        .map(|(image, _)| image)
+        .map(|(image, _)| image.into())
 }
 
 /// Trims animations until the resident frames fit the budget, sparing the
@@ -795,7 +802,7 @@ fn enforce_budget(animations: &mut Animations, path: &Path, now: Instant) {
 }
 
 /// Converts and scales one decoded frame.
-fn frame_of(yuv: &openh264::decoder::DecodedYUV<'_>) -> Option<ColorImage> {
+fn frame_of(yuv: &openh264::decoder::DecodedYUV<'_>) -> Option<PixelImage> {
     use openh264::formats::YUVSource;
 
     let (width, height) = yuv.dimensions();
@@ -817,7 +824,7 @@ fn frame_of(yuv: &openh264::decoder::DecodedYUV<'_>) -> Option<ColorImage> {
             image::imageops::FilterType::Triangle,
         )
     };
-    Some(to_color_image(&scaled))
+    Some(to_pixel_image(&scaled))
 }
 
 /// Media time an MP4's edit list starts showing from, in track time units.
@@ -914,7 +921,7 @@ fn decode_with_ffmpeg(path: &Path, limit: usize) -> Option<Decoded> {
             break;
         }
         frames.push((
-            ColorImage::from_rgba_unmultiplied([out_width as usize, out_height as usize], &buffer),
+            PixelImage::from_rgba_unmultiplied([out_width as usize, out_height as usize], &buffer),
             delay,
         ));
     }
@@ -1663,7 +1670,7 @@ mod tests {
                 frames: (0..count)
                     .map(|_| {
                         (
-                            ColorImage::new([1, 1], vec![egui::Color32::BLACK]),
+                            PixelImage::filled([1, 1], Pixel::from_rgb(0, 0, 0)),
                             Duration::from_millis(50),
                         )
                     })
@@ -1744,7 +1751,7 @@ mod tests {
                 frames: (0..count)
                     .map(|_| {
                         (
-                            ColorImage::new([1, 1], vec![egui::Color32::BLACK]),
+                            PixelImage::filled([1, 1], Pixel::from_rgb(0, 0, 0)),
                             Duration::from_millis(50),
                         )
                     })
@@ -1802,7 +1809,7 @@ mod tests {
         let default = egui::Id::new("default");
         let decoded = || Decoded {
             frames: vec![(
-                ColorImage::new([1, 1], vec![egui::Color32::WHITE]),
+                PixelImage::filled([1, 1], Pixel::from_rgb(255, 255, 255)),
                 Duration::from_millis(50),
             )],
         };

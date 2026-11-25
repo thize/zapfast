@@ -20,6 +20,11 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
+# Moves a picture between `pixels::PixelImage` and egui's `ColorImage` without
+# copying it. Both are already in the tree through egui, which turns the same
+# feature on.
+bytemuck = { version = "1", features = ["derive"], optional = true }
+ecolor = { version = "0.36.2", features = ["bytemuck"], optional = true }
 # Hashes saved stickers by content. Already included through wacore.
 sha2 = "0.11"
 # Already in the tree through rustls; verifies lock codes.
@@ -338,8 +343,13 @@ name = "macos_menu"
 harness = false
 
 [features]
+default = ["egui-ui"]
+# The egui interface and everything that draws it. Without it the library is
+# the backend alone (the WhatsApp worker, the archive, the model and the
+# settings), for another interface to build on.
+egui-ui = ["dep:bytemuck", "dep:ecolor"]
 # Sample data, layout tests, and screenshots. Not used in release builds.
-demo = []
+demo = ["egui-ui"]
 
 [profile.release]
 lto = "thin"

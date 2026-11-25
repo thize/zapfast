@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use egui::{ColorImage, TextureHandle, TextureOptions};
 
 use crate::backend::Waker;
+use crate::pixels::{Pixel, PixelImage};
 
 /// Longest side of a decoded frame in pixels: about twice the widest bubble.
 const MAX_SIDE: u32 = 720;
@@ -81,7 +82,7 @@ pub enum Notice {
 enum Delivery {
     /// The movie's length, sent before any frame.
     Length(Duration),
-    Frame(Duration, ColorImage),
+    Frame(Duration, PixelImage),
     /// Every frame has been sent.
     End,
     /// The file is not an H.264 MP4 this player can read.
@@ -561,7 +562,7 @@ struct Session {
     /// Whether playback starts once the first frame arrives.
     resume: bool,
     frames: Receiver<Delivery>,
-    queue: VecDeque<(Duration, ColorImage)>,
+    queue: VecDeque<(Duration, PixelImage)>,
     /// Every frame of the current decode has arrived.
     decoded: bool,
     texture: Option<TextureHandle>,
@@ -584,7 +585,7 @@ struct Session {
 struct Resize {
     side: u32,
     frames: Receiver<Delivery>,
-    queue: VecDeque<(Duration, ColorImage)>,
+    queue: VecDeque<(Duration, PixelImage)>,
 }
 
 impl Session {
@@ -650,8 +651,8 @@ impl Session {
         self.sound_retry = Some((now + wait, wait));
     }
 
-    fn show(&mut self, ctx: &egui::Context, image: ColorImage) {
-        let image = Arc::new(image);
+    fn show(&mut self, ctx: &egui::Context, image: PixelImage) {
+        let image = Arc::new(ColorImage::from(image));
         match &mut self.texture {
             Some(texture) => texture.set(Arc::clone(&image), TextureOptions::LINEAR),
             None => {
@@ -1104,7 +1105,7 @@ impl Frames {
 
 #[cfg(any(test, feature = "demo"))]
 impl Iterator for Frames {
-    type Item = (Duration, ColorImage);
+    type Item = (Duration, PixelImage);
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -1337,7 +1338,7 @@ struct Output<'a> {
     side: u32,
     /// The newest frame before `from`, which shows at `from` until the next
     /// frame is due.
-    held: Option<ColorImage>,
+    held: Option<PixelImage>,
     frames: &'a SyncSender<Delivery>,
     waker: &'a Waker,
 }
@@ -1381,7 +1382,7 @@ pub(crate) fn rgb_image(
     size: (usize, usize),
     out: (usize, usize),
     turns: u8,
-) -> ColorImage {
+) -> PixelImage {
     convert(
         &Planes {
             y,
@@ -1413,7 +1414,7 @@ pub(crate) fn orientation_turns(orientation: u8) -> u8 {
 
 /// Turns one decoded frame into an upright picture no larger than `side`
 /// on its longest side.
-fn picture(yuv: &openh264::decoder::DecodedYUV<'_>, turns: u8, side: u32) -> Option<ColorImage> {
+fn picture(yuv: &openh264::decoder::DecodedYUV<'_>, turns: u8, side: u32) -> Option<PixelImage> {
     use openh264::formats::YUVSource;
 
     let (width, height) = yuv.dimensions();
@@ -1449,7 +1450,7 @@ struct Planes<'a> {
 /// sample per output pixel, so a large video costs about as much as a small
 /// one; when scaling, luma is averaged over the first two by two source
 /// pixels each output pixel covers, which keeps downscaled edges smooth.
-fn convert(planes: &Planes<'_>, out: (usize, usize), turns: u8) -> ColorImage {
+fn convert(planes: &Planes<'_>, out: (usize, usize), turns: u8) -> PixelImage {
     let (width, height) = planes.size;
     let (out_width, out_height) = out;
     let turned = if turns % 2 == 1 {
@@ -1458,7 +1459,7 @@ fn convert(planes: &Planes<'_>, out: (usize, usize), turns: u8) -> ColorImage {
         [out_width, out_height]
     };
     let scaling = out != planes.size;
-    let mut pixels = vec![egui::Color32::BLACK; out_width * out_height];
+    let mut pixels = vec![Pixel::from_rgb(0, 0, 0); out_width * out_height];
     for oy in 0..out_height {
         let sy = (oy * height / out_height).min(height - 1);
         let below = if scaling {
@@ -1488,14 +1489,14 @@ fn convert(planes: &Planes<'_>, out: (usize, usize), turns: u8) -> ColorImage {
             pixels[ty * turned[0] + tx] = rgb(y as i32, i32::from(u[sx / 2]), i32::from(v[sx / 2]));
         }
     }
-    ColorImage::new(turned, pixels)
+    PixelImage::new(turned, pixels)
 }
 
 /// One limited-range BT.601 pixel in RGB.
-fn rgb(y: i32, u: i32, v: i32) -> egui::Color32 {
+fn rgb(y: i32, u: i32, v: i32) -> Pixel {
     let (c, d, e) = (298 * (y - 16), u - 128, v - 128);
     let channel = |value: i32| ((value + 128) >> 8).clamp(0, 255) as u8;
-    egui::Color32::from_rgb(
+    Pixel::from_rgb(
         channel(c + 409 * e),
         channel(c - 100 * d - 208 * e),
         channel(c + 516 * d),
@@ -1542,7 +1543,7 @@ mod tests {
             .session
             .as_mut()
             .unwrap()
-            .show(&old_ctx, image.clone());
+            .show(&old_ctx, PixelImage::from(image.clone()));
         let new_ctx = egui::Context::default();
         player.attach(&new_ctx);
         let session = player.session.as_ref().unwrap();
@@ -1974,8 +1975,8 @@ mod tests {
             strides: (4, 2, 2),
             size: (4, 2),
         };
-        let black = egui::Color32::from_rgb(0, 0, 0);
-        let white = egui::Color32::from_rgb(255, 255, 255);
+        let black = Pixel::from_rgb(0, 0, 0);
+        let white = Pixel::from_rgb(255, 255, 255);
         let full = convert(&planes, (4, 2), 0);
         assert_eq!(full.size, [4, 2]);
         assert_eq!(full.pixels[..4], [black, black, white, white]);
@@ -2013,8 +2014,8 @@ mod tests {
             strides: (4, 2, 2),
             size: (4, 2),
         };
-        let black = egui::Color32::from_rgb(0, 0, 0);
-        let white = egui::Color32::from_rgb(255, 255, 255);
+        let black = Pixel::from_rgb(0, 0, 0);
+        let white = Pixel::from_rgb(255, 255, 255);
         let upright = convert(&planes, (4, 2), orientation_turns(1));
         assert_eq!(
             upright.size,
@@ -2036,7 +2037,7 @@ mod tests {
 
     #[test]
     fn primaries_convert_to_their_colours() {
-        let near = |a: egui::Color32, b: [u8; 3]| {
+        let near = |a: Pixel, b: [u8; 3]| {
             a.r().abs_diff(b[0]) <= 2 && a.g().abs_diff(b[1]) <= 2 && a.b().abs_diff(b[2]) <= 2
         };
         // Limited-range BT.601 red, green, and blue.

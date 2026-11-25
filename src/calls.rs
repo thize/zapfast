@@ -18,9 +18,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
-use egui::ColorImage;
 
 use crate::model::CallDirection;
+use crate::pixels::PixelImage;
 use crate::video_rate::{Cadence, Change as RateChange, FrameClock, RateControl, RateShare};
 use whatsapp_rust::prelude::{Client, Jid};
 use whatsapp_rust::types::call::{CallAction, IncomingCall};
@@ -524,12 +524,12 @@ fn require_video(requested: bool, pipeline: bool) -> Result<()> {
 #[derive(Clone, Debug)]
 pub enum VideoTick {
     /// Our own camera, for the corner preview.
-    Local(Arc<ColorImage>),
+    Local(Arc<PixelImage>),
     /// The peer's picture, on a one-to-one call.
-    Remote(Arc<ColorImage>),
+    Remote(Arc<PixelImage>),
     /// One member's picture on a group call, by the sender the media named, so the call screen
     /// can put it on that member's tile.
-    RemoteFrom { sender: Jid, image: Arc<ColorImage> },
+    RemoteFrom { sender: Jid, image: Arc<PixelImage> },
     /// The peer's picture could not be decoded: the peer is asked for a keyframe.
     Lost,
 }

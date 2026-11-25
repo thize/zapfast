@@ -19,6 +19,7 @@ use crate::model::{
 };
 use crate::nav::{History, Location};
 use crate::paths::AppDirs;
+use crate::pixels::PixelImage;
 use crate::settings::{AccountRoster, NotificationSound, Settings, ThemeChoice};
 use crate::single_instance::{ControlCommand, Guard};
 use crate::theme::{self, Palette};
@@ -3807,7 +3808,11 @@ impl App {
                 local,
                 remote,
                 from,
-            } => self.handle_call_video(local, remote, from),
+            } => self.handle_call_video(
+                local.map(PixelImage::into_shared_color_image),
+                remote.map(PixelImage::into_shared_color_image),
+                from,
+            ),
             Event::CallLog(entries) => {
                 self.call_log = entries;
                 self.call_log_loaded = true;
@@ -4817,7 +4822,7 @@ impl App {
                     && matches!(staged.item, Pending::Picture { .. })
                 {
                     staged.preview = Some(std::sync::Arc::new(
-                        image.unwrap_or_else(egui::ColorImage::example),
+                        image.map_or_else(egui::ColorImage::example, egui::ColorImage::from),
                     ));
                 }
             }
@@ -13465,7 +13470,7 @@ mod tests {
         app.apply_backend_event(
             Event::PicturePreviewReady {
                 target,
-                image: Some(egui::ColorImage::example()),
+                image: Some(egui::ColorImage::example().into()),
             },
             false,
         );
@@ -13484,7 +13489,7 @@ mod tests {
         app.apply_backend_event(
             Event::PicturePreviewReady {
                 target,
-                image: Some(egui::ColorImage::example()),
+                image: Some(egui::ColorImage::example().into()),
             },
             false,
         );

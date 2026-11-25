@@ -12815,7 +12815,7 @@ mod tests {
             std::thread::spawn(move || crate::backend::picture_edit::preview(width, height, &rgba))
                 .join()
                 .unwrap()
-                .map(std::sync::Arc::new);
+                .map(|image| std::sync::Arc::new(egui::ColorImage::from(image)));
         assert_eq!(app.pending[0].id, target);
         render(&mut app, &ctx);
         let crate::app::Pending::Picture {
