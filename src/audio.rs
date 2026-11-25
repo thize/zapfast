@@ -1029,9 +1029,9 @@ mod tests {
         });
         // Once egui asks for no frame, the next request calls back.
         let settle = || crate::motion::tests::settle(&ctx);
-        let waker = Waker::default();
+        let waker = fastframe_shell::Waker::default();
         waker.attach(&ctx);
-        let recorder = Recorder::simulated(waker);
+        let recorder = Recorder::simulated(Waker::from(&waker));
         recorder.set_stepped(true);
         // Let a level already under way land first.
         std::thread::sleep(Duration::from_millis(80));

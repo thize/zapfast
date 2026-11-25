@@ -239,7 +239,9 @@ fn run() -> eframe::Result<()> {
         eprintln!("ZapFast cannot read a phone number or group invite link from {argument}");
         std::process::exit(2);
     }
-    let waker = backend::Waker::default();
+    // The shell repaints whichever window exists; the backend only asks it to.
+    let shell_waker = fastframe_shell::Waker::default();
+    let waker = backend::Waker::from(&shell_waker);
     #[cfg(feature = "demo")]
     let demo = cli.demo || cli.demo_shot.is_some() || cli.demo_tour;
     #[cfg(not(feature = "demo"))]
@@ -428,7 +430,7 @@ fn run() -> eframe::Result<()> {
         demo,
         update_receipt.is_some(),
     );
-    fastframe_shell::Shell::new(app, &waker)
+    fastframe_shell::Shell::new(app, &shell_waker)
         .start_hidden(start_hidden)
         .idle(fastframe_tray::idle)
         .run(|lease| {

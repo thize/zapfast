@@ -12934,7 +12934,9 @@ mod tests {
             let directory = tempfile::tempdir().unwrap();
             let mut app = App::headless(AppDirs::under(directory.path()), Settings::default()).0;
             let ctx = crate::motion::tests::reading(reader);
-            app.waker.attach(&ctx);
+            let shell = fastframe_shell::Waker::default();
+            shell.attach(&ctx);
+            app.waker = Waker::from(&shell);
             app.recording = Some(Recorder::rehearsal());
             let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.tick_audio(ui.ctx()));
             output.textures_delta.clear();
@@ -14873,7 +14875,9 @@ mod tests {
             answered: false,
         });
         let ctx = egui::Context::default();
-        app.waker.attach(&ctx);
+        let shell = fastframe_shell::Waker::default();
+        shell.attach(&ctx);
+        app.waker = Waker::from(&shell);
         // Quiet passes use up egui's own follow-up frames.
         for _ in 0..10 {
             if !ctx.has_requested_repaint() {

@@ -97,6 +97,59 @@ mod tests {
         assert!(never_started.wait_for_shutdown(Instant::now()));
     }
 
+    /// A waker runs what it was made from, from every clone, and the default
+    /// one is harmless to call.
+    #[test]
+    fn a_waker_runs_the_closures_it_was_made_from() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+        let woken = Arc::new(AtomicUsize::new(0));
+        let delayed = Arc::new(AtomicUsize::new(0));
+        let waker = super::Waker::new(
+            {
+                let woken = Arc::clone(&woken);
+                move || {
+                    woken.fetch_add(1, Ordering::SeqCst);
+                }
+            },
+            {
+                let delayed = Arc::clone(&delayed);
+                move |delay| {
+                    delayed.fetch_add(delay.as_millis() as usize, Ordering::SeqCst);
+                }
+            },
+        );
+        waker.wake();
+        waker.clone().wake();
+        waker.wake_after(Duration::from_millis(40));
+        assert_eq!(woken.load(Ordering::SeqCst), 2);
+        assert_eq!(delayed.load(Ordering::SeqCst), 40);
+        super::Waker::default().wake();
+        super::Waker::default().wake_after(Duration::from_secs(1));
+    }
+
+    /// The shell's waker, wrapped, still repaints the window it is attached to.
+    #[cfg(feature = "egui-ui")]
+    #[test]
+    fn a_waker_made_from_the_shells_repaints_its_window() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let ctx = egui::Context::default();
+        let asked = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&asked);
+        ctx.set_request_repaint_callback(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+        let shell = fastframe_shell::Waker::default();
+        let waker = super::Waker::from(&shell);
+        waker.wake();
+        assert_eq!(asked.load(Ordering::SeqCst), 0, "no window is attached yet");
+        shell.attach(&ctx);
+        waker.wake();
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+    }
+
     #[test]
     fn backend_waits_for_window_acknowledgement_before_touching_storage() {
         let directory = tempfile::tempdir().unwrap();
@@ -1762,8 +1815,68 @@ pub enum Unsent {
     Gif,
 }
 
-/// Cross-thread window wake handle: repaints whichever window exists.
-pub use fastframe_shell::Waker;
+/// Cross-thread window wake handle: asks the interface for a new frame, from
+/// any thread. What waking does is the interface's own: the worker and the
+/// players only call [`Waker::wake`] and [`Waker::wake_after`].
+#[derive(Clone)]
+pub struct Waker {
+    wake: Arc<dyn Fn() + Send + Sync>,
+    wake_after: Arc<dyn Fn(Duration) + Send + Sync>,
+}
+
+impl Waker {
+    /// A handle that runs `wake` whenever the interface has to look again, and
+    /// `wake_after` when it has to look again after a delay.
+    pub fn new(
+        wake: impl Fn() + Send + Sync + 'static,
+        wake_after: impl Fn(Duration) + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            wake: Arc::new(wake),
+            wake_after: Arc::new(wake_after),
+        }
+    }
+
+    /// Asks the interface for a new frame.
+    pub fn wake(&self) {
+        (self.wake)();
+    }
+
+    /// Asks the interface for a new frame after `delay`.
+    pub fn wake_after(&self, delay: Duration) {
+        (self.wake_after)(delay);
+    }
+}
+
+/// Wakes nothing, for tests and for runs with no window.
+impl Default for Waker {
+    fn default() -> Self {
+        Self::new(|| {}, |_| {})
+    }
+}
+
+impl std::fmt::Debug for Waker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Waker").finish_non_exhaustive()
+    }
+}
+
+/// Wakes the window the shell holds: it repaints whichever window exists, and
+/// ends the shell's sleep while there is none.
+#[cfg(feature = "egui-ui")]
+impl From<&fastframe_shell::Waker> for Waker {
+    fn from(shell: &fastframe_shell::Waker) -> Self {
+        let (now, later) = (shell.clone(), shell.clone());
+        Self::new(move || now.wake(), move |delay| later.wake_after(delay))
+    }
+}
+
+/// What an offline demo's window is woken through: it attaches the window's
+/// context, which the neutral [`Waker`] has no way to hold.
+#[cfg(all(feature = "egui-ui", any(test, feature = "demo")))]
+type DemoWaker = fastframe_shell::Waker;
+#[cfg(all(not(feature = "egui-ui"), test))]
+type DemoWaker = Waker;
 
 /// UI handle to the backend runtime.
 pub struct Backend {
@@ -1777,7 +1890,7 @@ pub struct Backend {
     #[cfg(any(test, feature = "demo"))]
     demo_events: Option<std::sync::mpsc::Sender<Event>>,
     #[cfg(any(test, feature = "demo"))]
-    demo_waker: Waker,
+    demo_waker: DemoWaker,
 }
 
 impl Backend {
@@ -1815,7 +1928,7 @@ impl Backend {
             #[cfg(any(test, feature = "demo"))]
             demo_events: None,
             #[cfg(any(test, feature = "demo"))]
-            demo_waker: Waker::default(),
+            demo_waker: DemoWaker::default(),
         }
     }
 
@@ -1835,7 +1948,7 @@ impl Backend {
                 #[cfg(any(test, feature = "demo"))]
                 demo_events: Some(event_tx.clone()),
                 #[cfg(any(test, feature = "demo"))]
-                demo_waker: Waker::default(),
+                demo_waker: DemoWaker::default(),
             },
             event_tx,
         )
