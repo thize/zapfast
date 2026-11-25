@@ -13,3 +13,4 @@ pub mod palette;
 pub mod shell;
 pub mod state;
 pub mod ui;
+pub mod views;

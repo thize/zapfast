@@ -27,6 +27,11 @@ impl Stats {
         self.renders.borrow_mut().push(Instant::now());
     }
 
+    /// Every render so far (tests).
+    pub fn total_renders(&self) -> usize {
+        self.renders.borrow().len()
+    }
+
     /// The window gained or lost focus.
     pub fn activation_changed(&self) {
         self.activations.borrow_mut().push(Instant::now());

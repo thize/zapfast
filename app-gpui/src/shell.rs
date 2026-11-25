@@ -1,21 +1,26 @@
-//! The window's root view for phase 2: a plain skeleton that shows the state
-//! is alive (the link, the chats, the open conversation's size). The screens
-//! replace it; what stays is how a view holds the [`Store`] and observes only
+//! The window's root view: the login screen until the account is linked, then
+//! the chat list beside the open chat. It holds the [`Store`] and observes only
 //! the entities it draws, so an idle app renders nothing.
 
 use std::rc::Rc;
 
 use gpui::{
-    Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled, Window, div, px,
+    AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement,
+    ParentElement, Render, Role, SharedString, StatefulInteractiveElement, Styled, Subscription,
+    Window, div, img, px,
 };
 use gpui_component::{Theme, ThemeMode};
-use zapfast::backend::LinkStatus;
 
 use crate::bench::Stats;
-use crate::brand::APP_NAME;
 use crate::palette::Palette;
-use crate::state::Store;
-use crate::ui::{ActivePalette, avatar, palette};
+use crate::state::{ChatList, ChatListEvent, Session, Store};
+use crate::ui::{ActivePalette, palette};
+use crate::views::avatar::Avatars;
+use crate::views::chat_list::ChatListView;
+use crate::views::login::LoginView;
+use crate::views::panel::ChatPanel;
+
+pub const SIDEBAR_WIDTH: f32 = 400.0;
 
 /// Makes gpui-component's theme (used by the text area) match the palette.
 pub fn apply_theme(palette: Palette, cx: &mut gpui::App) {
@@ -55,8 +60,15 @@ pub fn caret_policy(window_active: bool) -> gpui_component::input::CursorBlink {
 
 pub struct Shell {
     store: Entity<Store>,
+    session: Entity<Session>,
+    chats: Entity<ChatList>,
+    avatars: Entity<Avatars>,
+    login: Entity<LoginView>,
+    list: Entity<ChatListView>,
+    panel: Option<Entity<ChatPanel>>,
     stats: Rc<Stats>,
-    _subscriptions: Vec<gpui::Subscription>,
+    focus: FocusHandle,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl Shell {
@@ -71,6 +83,18 @@ impl Shell {
             let store = store.read(cx);
             (store.session.clone(), store.chats.clone())
         };
+        let avatars = cx.new(|_| Avatars::default());
+        let login = cx.new(|cx| LoginView::new(store.clone(), window, cx));
+        let list = cx.new(|cx| ChatListView::new(store.clone(), avatars.clone(), window, cx));
+        let on_open = cx.subscribe_in(
+            &chats,
+            window,
+            |this, _, event: &ChatListEvent, window, cx| {
+                if let ChatListEvent::Opened(open) = event {
+                    this.show_chat(open.clone(), window, cx);
+                }
+            },
+        );
         let appearance = window.observe_window_appearance(move |window, cx| {
             let palette = match forced_dark {
                 Some(dark) => Palette::for_appearance(dark),
@@ -93,15 +117,42 @@ impl Shell {
         });
         let subscriptions = vec![
             cx.observe(&session, |_, _, cx| cx.notify()),
-            cx.observe(&chats, |_, _, cx| cx.notify()),
+            on_open,
             appearance,
             activation,
         ];
-        Self {
+        let mut this = Self {
             store,
+            session,
+            chats,
+            avatars,
+            login,
+            list,
+            panel: None,
             stats,
+            focus: cx.focus_handle(),
             _subscriptions: subscriptions,
+        };
+        let open = this.chats.read(cx).open.clone();
+        this.show_chat(open, window, cx);
+        this
+    }
+
+    /// Opens the pane of `chat`, or closes it with `None`.
+    fn show_chat(&mut self, chat: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        self.panel = chat.map(|chat| {
+            let conversation = self
+                .store
+                .update(cx, |store, cx| store.conversation(&chat, cx));
+            let (store, avatars, stats) =
+                (self.store.clone(), self.avatars.clone(), self.stats.clone());
+            cx.new(|cx| ChatPanel::new(store, conversation, avatars, stats, window, cx))
+        });
+        if let Some(panel) = &self.panel {
+            let handle = panel.read(cx).focus_handle(cx);
+            window.focus(&handle, cx);
         }
+        cx.notify();
     }
 
     pub fn stats(&self) -> Rc<Stats> {
@@ -111,71 +162,155 @@ impl Shell {
     pub fn store(&self) -> &Entity<Store> {
         &self.store
     }
+
+    pub fn login(&self) -> &Entity<LoginView> {
+        &self.login
+    }
+
+    pub fn chat_list(&self) -> &Entity<ChatListView> {
+        &self.list
+    }
+
+    pub fn panel(&self) -> Option<&Entity<ChatPanel>> {
+        self.panel.as_ref()
+    }
+}
+
+impl Focusable for Shell {
+    fn focus_handle(&self, _cx: &gpui::App) -> FocusHandle {
+        self.focus.clone()
+    }
 }
 
 impl Render for Shell {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.stats.render();
         let p = palette(cx);
-        let store = self.store.read(cx);
-        let session = store.session.read(cx);
-        let status = match &session.link {
-            LinkStatus::Starting => "Iniciando…".to_owned(),
-            LinkStatus::Connecting => "Conectando…".to_owned(),
-            LinkStatus::Connected => "Conectado".to_owned(),
-            LinkStatus::Unlinked { .. } => match &session.qr {
-                Some(qr) => format!("Aguardando leitura do QR ({0}×{0} módulos)", qr.width),
-                None => "Aguardando pareamento".to_owned(),
-            },
-            LinkStatus::Disconnected { reason } => format!("Desconectado: {reason}"),
-            LinkStatus::LoggedOut => "Aparelho desvinculado".to_owned(),
-            LinkStatus::Failed(error) => format!("Falhou: {error}"),
+        if self.session.read(cx).needs_login() {
+            return div()
+                .size_full()
+                .key_context("Shell")
+                .track_focus(&self.focus)
+                .child(self.login.clone())
+                .into_any_element();
+        }
+        let right = match &self.panel {
+            Some(panel) => div().size_full().child(panel.clone()).into_any_element(),
+            None => div()
+                .id("no-chat")
+                .role(Role::Group)
+                .aria_label("Nenhuma conversa aberta")
+                .size_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(14.))
+                .bg(p.window)
+                .child(img("logo.svg").size(px(72.)))
+                .child(div().text_size(px(28.)).text_color(p.text).child("ZapFast"))
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .text_color(p.secondary)
+                        .child(SharedString::from("Escolha uma conversa para começar.")),
+                )
+                .into_any_element(),
         };
-        let rows: Vec<_> = store
-            .chats
-            .read(cx)
-            .visible()
-            .into_iter()
-            .map(|chat| {
-                let preview = chat
-                    .last
-                    .as_ref()
-                    .map(|last| last.summary.clone())
-                    .unwrap_or_default();
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .px_3()
-                    .py_2()
-                    .child(avatar(&chat.name, 40.0, p.dark))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .child(div().child(SharedString::from(chat.name.clone())))
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(p.secondary)
-                                    .child(SharedString::from(preview)),
-                            ),
-                    )
-            })
-            .collect();
         div()
             .size_full()
             .flex()
-            .flex_col()
+            .key_context("Shell")
+            .track_focus(&self.focus)
             .bg(p.window)
-            .text_color(p.text)
             .child(
                 div()
-                    .px_3()
-                    .py_2()
-                    .bg(p.panel)
-                    .child(SharedString::from(format!("{APP_NAME} — {status}"))),
+                    .flex_none()
+                    .w(px(SIDEBAR_WIDTH))
+                    .h_full()
+                    .border_r_1()
+                    .border_color(p.outline)
+                    .child(self.list.clone()),
             )
-            .child(div().w(px(360.0)).flex().flex_col().children(rows))
+            .child(div().flex_1().min_w_0().h_full().child(right))
+            .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::demo::{self, ANA, PAGE};
+    use crate::views::testing::launch;
+    use gpui::TestAppContext;
+
+    #[gpui::test]
+    fn login_gives_way_to_the_chats_once_linked_and_a_chat_opens_and_closes(
+        cx: &mut TestAppContext,
+    ) {
+        let demo = launch(cx, false);
+        let store = demo.store.clone();
+        let (shell, cx) = cx.add_window_view({
+            let store = store.clone();
+            move |window, cx| Shell::new(store, Stats::new(), Some(true), window, cx)
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(store.read_with(cx, |s, cx| s.session.read(cx).needs_login()));
+        assert!(shell.read_with(cx, |shell, _| shell.panel().is_none()));
+
+        // The phone accepts the link: the chat list takes the window.
+        demo::start(&demo.injector);
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(!store.read_with(cx, |s, cx| s.session.read(cx).needs_login()));
+        assert_eq!(
+            shell.read_with(cx, |shell, cx| shell
+                .chat_list()
+                .read(cx)
+                .visible_ids()
+                .len()),
+            5
+        );
+        assert!(shell.read_with(cx, |shell, _| shell.panel().is_none()));
+
+        // Opening a chat shows its conversation, loaded from the backend.
+        store.update(cx, |store, cx| store.open_chat(Some(ANA.to_owned()), cx));
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let panel = shell
+            .read_with(cx, |shell, _| shell.panel().cloned())
+            .expect("the panel opened");
+        assert_eq!(panel.read_with(cx, |panel, _| panel.chat().clone()), ANA);
+        assert_eq!(
+            panel.read_with(cx, |panel, cx| panel
+                .conversation()
+                .read(cx)
+                .message_count()),
+            PAGE
+        );
+
+        // Closing it goes back to the empty pane.
+        store.update(cx, |store, cx| store.open_chat(None, cx));
+        cx.run_until_parked();
+        assert!(shell.read_with(cx, |shell, _| shell.panel().is_none()));
+    }
+
+    #[gpui::test]
+    fn a_window_in_the_background_does_not_read_the_open_chat(cx: &mut TestAppContext) {
+        let demo = launch(cx, true);
+        let store = demo.store.clone();
+        let unread = |cx: &mut TestAppContext| {
+            store.read_with(cx, |s, cx| s.chats.read(cx).chat(ANA).unwrap().unread)
+        };
+        store.update(cx, |store, cx| store.set_window_active(false, cx));
+        store.update(cx, |store, cx| store.open_chat(Some(ANA.to_owned()), cx));
+        cx.run_until_parked();
+        assert!(
+            unread(cx) > 0,
+            "an open chat behind other windows stays unread"
+        );
+        store.update(cx, |store, cx| store.set_window_active(true, cx));
+        cx.run_until_parked();
+        assert_eq!(unread(cx), 0, "coming back to the front reads it");
     }
 }

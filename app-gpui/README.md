@@ -4,7 +4,7 @@ ZapFast's WhatsApp backend with a GPUI interface. This crate is a workspace of i
 
 The name is provisional and lives in one file, `src/brand.rs` (`APP_NAME`, `APP_ID`). Everything that must differ from an installed ZapFast is derived from `APP_ID`.
 
-Phase 2 is the base: isolation, the bridge to the backend, the state as GPUI entities, a demo, and a skeleton window. The screens (login, chat list, conversation) are built on it; media is phase 3.
+Phase 2 is the base: isolation, the bridge to the backend, the state as GPUI entities, a demo, and a skeleton window. The screens (login, chat list, conversation) are built on it, see `src/views/README.md`; media is phase 3.
 
 ## Run
 

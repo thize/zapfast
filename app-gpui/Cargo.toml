@@ -40,6 +40,9 @@ qrcode = { version = "0.14", default-features = false }
 # executor without polling.
 futures = "0.3"
 log = "0.4"
+# Decodes the chat pictures, and the local clock.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+jiff = "0.2"
 unicode-segmentation = "1"
 # ZapFast's platform crates, at the tag the root declares. This app opens its
 # own single-instance slot and login item through them instead of going

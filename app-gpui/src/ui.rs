@@ -2,14 +2,27 @@
 
 use crate::palette::Palette;
 use gpui::{
-    App, Global, Hsla, IntoElement, ParentElement, SharedString, Styled, Svg, div, hsla, px, svg,
+    AnyElement, App, Global, Hsla, IntoElement, ObjectFit, ParentElement, RenderImage,
+    SharedString, Styled, StyledImage as _, Svg, div, hsla, img, px, svg,
 };
+use std::sync::Arc;
 
 /// The active palette, kept in a global so every view reads the same one and
 /// a change of appearance reaches all of them with one window refresh.
 pub struct ActivePalette(pub Palette);
 
 impl Global for ActivePalette {}
+
+/// The language the screens write content labels in.
+pub struct ActiveLocale(pub zapfast::i18n::Locale);
+
+impl Global for ActiveLocale {}
+
+/// The active language, the system's when none was set.
+pub fn locale(cx: &App) -> zapfast::i18n::Locale {
+    cx.try_global::<ActiveLocale>()
+        .map_or_else(zapfast::i18n::detect, |active| active.0)
+}
 
 pub fn palette(cx: &App) -> Palette {
     cx.global::<ActivePalette>().0
@@ -56,6 +69,24 @@ pub fn avatar(name: &str, size: f32, dark: bool) -> impl IntoElement {
         .text_size(px(size * 0.38))
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .child(SharedString::from(initials(name)))
+}
+
+/// A round avatar with the contact's picture when there is one.
+pub fn avatar_picture(
+    name: &str,
+    picture: Option<Arc<RenderImage>>,
+    size: f32,
+    dark: bool,
+) -> AnyElement {
+    match picture {
+        Some(picture) => img(picture)
+            .size(px(size))
+            .flex_none()
+            .rounded_full()
+            .object_fit(ObjectFit::Cover)
+            .into_any_element(),
+        None => avatar(name, size, dark).into_any_element(),
+    }
 }
 
 #[cfg(test)]

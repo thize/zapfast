@@ -11633,6 +11633,8 @@ dependencies = [
  "gpui-component",
  "gpui-pre",
  "gpui-pre-platform",
+ "image",
+ "jiff 0.2.38",
  "keyring-core",
  "log",
  "qrcode",
