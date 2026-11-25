@@ -40,6 +40,8 @@ const FILES: &[(&str, &[u8])] = &[
     zapfast!("keyboard.svg"),
     zapfast!("timer.svg"),
     zapfast!("sticker.svg"),
+    zapfast!("download.svg"),
+    zapfast!("gif.svg"),
     // The rest of the Lucide icons ZapFast ships through fastframe-icons.
     local!("search.svg"),
     local!("mic.svg"),
@@ -54,6 +56,7 @@ const FILES: &[(&str, &[u8])] = &[
     local!("lock.svg"),
     local!("volume-x.svg"),
     local!("copy.svg"),
+    local!("play.svg"),
     zapfast!("qr-code.svg"),
     // The chat wallpaper and the app logo.
     (

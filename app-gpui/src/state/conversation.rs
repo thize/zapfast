@@ -11,7 +11,9 @@
 //! list needs to splice itself and keep its scroll position.
 
 use gpui::{Context, EventEmitter};
-use zapfast::model::{ChatId, Message};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use zapfast::model::{ChatId, Media, MediaState, Message};
 
 /// What a change to the messages did to the rows, in terms a list can apply.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,6 +30,8 @@ pub enum ConversationEvent {
     Removed { index: usize },
     /// The "loading older messages" flag changed.
     Loading,
+    /// A download's progress moved: only the rings need to draw again.
+    Progress,
 }
 
 /// Loaded history of one chat.
@@ -49,6 +53,8 @@ pub struct Conversation {
     /// Counts every change, so a cached view can tell it must render again
     /// without looking at the messages.
     pub revision: u64,
+    /// Download progress, in percent, of the attachments being fetched.
+    pub progress: HashMap<String, u8>,
 }
 
 impl EventEmitter<ConversationEvent> for Conversation {}
@@ -64,6 +70,7 @@ impl Conversation {
             fetching_phone: false,
             phone_exhausted: false,
             revision: 0,
+            progress: HashMap::new(),
         }
     }
 
@@ -221,6 +228,53 @@ impl Conversation {
         if self.loading_older != loading {
             self.loading_older = loading;
             cx.emit(ConversationEvent::Loading);
+            cx.notify();
+        }
+    }
+
+    /// The worker finished downloading the attachment of message `id`: the
+    /// file is now there, or the download failed.
+    pub fn set_media(&mut self, id: &str, result: Result<PathBuf, String>, cx: &mut Context<Self>) {
+        let state = match result {
+            Ok(path) => {
+                self.edit_media(id, |media| {
+                    media.path = Some(path);
+                    media.state = MediaState::Idle;
+                });
+                return self.media_changed(id, cx);
+            }
+            Err(error) => MediaState::Failed(error),
+        };
+        self.set_media_state(id, state, cx);
+    }
+
+    /// Marks the attachment of message `id` as downloading, failed or idle.
+    pub fn set_media_state(&mut self, id: &str, state: MediaState, cx: &mut Context<Self>) {
+        self.edit_media(id, |media| media.state = state);
+        self.media_changed(id, cx);
+    }
+
+    /// How far the attachment of message `id` has downloaded.
+    pub fn set_progress(&mut self, id: &str, percent: u8, cx: &mut Context<Self>) {
+        if self.progress.insert(id.to_owned(), percent) != Some(percent) {
+            cx.emit(ConversationEvent::Progress);
+        }
+    }
+
+    fn edit_media(&mut self, id: &str, change: impl FnOnce(&mut Media)) {
+        if let Some(media) = self
+            .position(id)
+            .and_then(|index| self.messages[index].content.media_mut())
+        {
+            change(media);
+        }
+    }
+
+    fn media_changed(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.progress.remove(id);
+        if let Some(index) = self.position(id) {
+            self.revision += 1;
+            cx.emit(ConversationEvent::Updated { index });
             cx.notify();
         }
     }

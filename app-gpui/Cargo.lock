@@ -11641,6 +11641,18 @@ dependencies = [
  "tempfile",
  "unicode-segmentation",
  "zapfast",
+ "zapfast-gpui-media",
+]
+
+[[package]]
+name = "zapfast-gpui-media"
+version = "0.0.0"
+dependencies = [
+ "futures",
+ "gpui-pre",
+ "image",
+ "rasterlottie",
+ "zip",
 ]
 
 [[package]]

@@ -51,12 +51,14 @@ impl ChatPanel {
         let on_reply = cx.subscribe_in(
             &view,
             window,
-            |this, _, event: &ConversationViewEvent, window, cx| {
-                let ConversationViewEvent::Reply(draft) = event;
-                this.reply = Some(draft.clone());
-                this.composer
-                    .update(cx, |composer, cx| composer.focus(window, cx));
-                cx.notify();
+            |this, _, event: &ConversationViewEvent, window, cx| match event {
+                ConversationViewEvent::Reply(draft) => {
+                    this.reply = Some(draft.clone());
+                    this.composer
+                        .update(cx, |composer, cx| composer.focus(window, cx));
+                    cx.notify();
+                }
+                ConversationViewEvent::OpenMedia { .. } => {}
             },
         );
         let on_chats = cx.observe(&chats, |_, _, cx| cx.notify());

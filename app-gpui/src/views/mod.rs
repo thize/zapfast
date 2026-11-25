@@ -11,6 +11,7 @@ pub mod conversation;
 pub mod copy;
 pub mod login;
 pub mod markup;
+pub mod media;
 pub mod msgview;
 pub mod panel;
 pub mod selectable;

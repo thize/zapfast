@@ -132,6 +132,119 @@ fn media(mime: &str, size: u64) -> Media {
     }
 }
 
+/// What the pictures and clips of Ana's chat are: message `n`, the file under
+/// `assets/demo` that stands in for its download, and the one the preview is
+/// cut from (ZapFast's public-domain demo media, see its SOURCES.md).
+struct DemoMedia {
+    n: usize,
+    kind: DemoKind,
+    file: &'static str,
+    preview: &'static str,
+}
+
+#[derive(Clone, Copy)]
+enum DemoKind {
+    Photo,
+    Video,
+    Gif,
+    Sticker { animated: bool },
+}
+
+const ANA_MEDIA: [DemoMedia; 5] = [
+    DemoMedia {
+        n: 50,
+        kind: DemoKind::Photo,
+        file: "photos/venue.jpg",
+        preview: "photos/venue.jpg",
+    },
+    DemoMedia {
+        n: 52,
+        kind: DemoKind::Sticker { animated: true },
+        file: "stickers/astronaut-float.webp",
+        preview: "stickers/astronaut.webp",
+    },
+    DemoMedia {
+        n: 54,
+        kind: DemoKind::Sticker { animated: false },
+        file: "stickers/cat.webp",
+        preview: "stickers/cat.webp",
+    },
+    DemoMedia {
+        n: 56,
+        kind: DemoKind::Video,
+        file: "videos/launch.mp4",
+        preview: "gifs/launch.jpg",
+    },
+    DemoMedia {
+        n: 58,
+        kind: DemoKind::Gif,
+        file: "videos/note.mp4",
+        preview: "gifs/pug.jpg",
+    },
+];
+
+fn demo_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/demo")
+}
+
+impl DemoMedia {
+    /// The message content and its small preview picture (as WhatsApp sends
+    /// one: a few KB of JPEG).
+    fn content(&self) -> (Content, Option<Vec<u8>>) {
+        let path = demo_dir().join(self.file);
+        let size = std::fs::metadata(&path).map_or(100_000, |meta| meta.len());
+        let (width, height) =
+            image::image_dimensions(demo_dir().join(self.preview)).unwrap_or((0, 0));
+        let mut media = media(
+            match self.kind {
+                DemoKind::Photo => "image/jpeg",
+                DemoKind::Video | DemoKind::Gif => "video/mp4",
+                DemoKind::Sticker { .. } => "image/webp",
+            },
+            size,
+        );
+        (media.width, media.height) = (Some(width), Some(height));
+        let content = match self.kind {
+            DemoKind::Photo => Content::Image {
+                caption: Some("Olha que vista".into()),
+                media,
+                motion: None,
+            },
+            DemoKind::Video | DemoKind::Gif => Content::Video {
+                caption: None,
+                media,
+                seconds: Some(4),
+                gif: matches!(self.kind, DemoKind::Gif),
+                note: false,
+            },
+            DemoKind::Sticker { animated } => Content::Sticker { media, animated },
+        };
+        (content, preview_of(&demo_dir().join(self.preview)))
+    }
+}
+
+/// A 64-pixel JPEG cut from a picture, the preview a message carries.
+fn preview_of(path: &std::path::Path) -> Option<Vec<u8>> {
+    let small = image::open(path).ok()?.thumbnail(64, 64).into_rgb8();
+    let mut bytes = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 70)
+        .encode_image(&small)
+        .ok()?;
+    Some(bytes)
+}
+
+/// The file the demo answers a download of message `id` with.
+pub fn media_file(chat: &str, id: &str) -> Option<std::path::PathBuf> {
+    let n: usize = id.rsplit('-').next()?.parse().ok()?;
+    if chat != ANA {
+        return None;
+    }
+    ANA_MEDIA
+        .iter()
+        .find(|entry| entry.n == n)
+        .map(|entry| demo_dir().join(entry.file))
+}
+
 /// The whole history of a chat, oldest first.
 pub fn history(id: &str) -> Vec<Message> {
     let Some((index, spec)) = SPECS.iter().enumerate().find(|(_, spec)| spec.id == id) else {
@@ -156,12 +269,11 @@ pub fn history(id: &str) -> Vec<Message> {
             }
         };
         let mut content = text(LINES[(n * 5 + index * 7) % LINES.len()]);
-        if id == ANA && n == 20 {
-            content = Content::Image {
-                caption: Some("Olha que vista".into()),
-                media: media("image/jpeg", 120_000),
-                motion: None,
-            };
+        let mut thumbnail = None;
+        if id == ANA
+            && let Some(entry) = ANA_MEDIA.iter().find(|entry| entry.n == n)
+        {
+            (content, thumbnail) = entry.content();
         } else if id == ANA && n == 30 {
             content = Content::Audio {
                 media: media("audio/ogg", 24_000),
@@ -198,7 +310,7 @@ pub fn history(id: &str) -> Vec<Message> {
             edited: false,
             mentions: Vec::new(),
             forwarded: false,
-            thumbnail: None,
+            thumbnail,
         };
         // Every seventh message quotes the one before it; every eleventh has a
         // reaction from the other side.
@@ -481,6 +593,20 @@ impl CommandSink for Responder {
             Command::FetchAvatar { id, full } => {
                 let path = portrait(&id);
                 self.injector.send(Event::Avatar { id, full, path });
+            }
+            Command::Download { chat, message, .. } => {
+                self.injector.send(Event::DownloadProgress {
+                    chat: chat.clone(),
+                    message: message.clone(),
+                    percent: 60,
+                });
+                let result = media_file(&chat, &message).ok_or_else(|| "not in the demo".into());
+                self.injector.send(Event::Media {
+                    card: None,
+                    chat,
+                    message,
+                    result,
+                });
             }
             Command::PairWithPhone(phone) => {
                 self.injector.send(Event::Link(LinkStatus::Unlinked {

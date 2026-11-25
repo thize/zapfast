@@ -18,7 +18,7 @@ use std::rc::Rc;
 
 use gpui::{AppContext as _, Context, Entity, EventEmitter};
 use zapfast::backend::{Command, Event, Refusal, Unsent};
-use zapfast::model::{ChatId, Message, ReplyTarget};
+use zapfast::model::{ChatId, MediaState, Message, ReplyTarget};
 
 use super::chats::ChatList;
 use super::conversation::Conversation;
@@ -82,6 +82,10 @@ pub struct Store {
     /// Whether opening a chat tells the sender it was read (the account's
     /// read-receipts setting; on until settings are read in this app).
     pub send_read_receipts: bool,
+    /// Whether pictures, clips and the like download as their rows come into
+    /// view (the account's setting; on until settings are read in this app).
+    /// Stickers always do.
+    pub auto_download: bool,
     /// Events applied, for tests and for the idle benchmark's accounting.
     pub applied: u64,
 }
@@ -95,6 +99,7 @@ impl Store {
             sink,
             window_active: true,
             send_read_receipts: true,
+            auto_download: true,
             applied: 0,
         }
     }
@@ -224,6 +229,25 @@ impl Store {
                 unsent,
                 reason,
             }),
+            Event::Media {
+                card: None,
+                chat,
+                message,
+                result,
+            } => {
+                if let Some(conversation) = self.conversations.get(&chat) {
+                    conversation.update(cx, |c, cx| c.set_media(&message, result, cx));
+                }
+            }
+            Event::DownloadProgress {
+                chat,
+                message,
+                percent,
+            } => {
+                if let Some(conversation) = self.conversations.get(&chat) {
+                    conversation.update(cx, |c, cx| c.set_progress(&message, percent, cx));
+                }
+            }
             Event::Error(message) => cx.emit(StoreEvent::Error(message)),
             Event::Info(message) => cx.emit(StoreEvent::Info(message)),
             _ => {}
@@ -407,6 +431,36 @@ impl Store {
             chat: chat.to_owned(),
             message: message.to_owned(),
             emoji,
+        });
+    }
+
+    /// Downloads the attachment of `message`. `manual` is the reader asking
+    /// (no size limit); the automatic kind refuses what is past the limit. The
+    /// row shows the download from here on, and asking twice sends one command.
+    pub fn download(&mut self, chat: &str, message: &str, manual: bool, cx: &mut Context<Self>) {
+        let Some(conversation) = self.conversations.get(chat).cloned() else {
+            return;
+        };
+        let wanted = conversation
+            .read(cx)
+            .message(message)
+            .and_then(|m| m.content.media())
+            .is_some_and(|media| {
+                media.path.is_none()
+                    && !matches!(media.state, MediaState::Downloading)
+                    && (manual || media.is_within_download_limit())
+            });
+        if !wanted {
+            return;
+        }
+        conversation.update(cx, |c, cx| {
+            c.set_media_state(message, MediaState::Downloading, cx)
+        });
+        self.sink.send(Command::Download {
+            manual,
+            card: None,
+            chat: chat.to_owned(),
+            message: message.to_owned(),
         });
     }
 

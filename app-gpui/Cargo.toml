@@ -50,6 +50,8 @@ unicode-segmentation = "1"
 fastframe-instance = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1" }
 fastframe-autostart = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1" }
 anyhow = "1"
+# Pictures, animations and video surfaces for the bubbles (Phase 3).
+zapfast-gpui-media = { path = "../media-gpui" }
 
 [dev-dependencies]
 gpui = { package = "gpui-pre", version = "=0.3.14", features = ["test-support"] }

@@ -3,6 +3,7 @@
 //! older messages at the top, and the pointer handling that turns drags into a
 //! selection across messages.
 
+use super::media::{self, BubbleMedia};
 use super::selectable::{self, Registry, SelectableText, TextColors};
 use crate::assets::WALLPAPER_TILE;
 use crate::bench::Stats;
@@ -107,6 +108,9 @@ pub struct ReplyDraft {
 pub enum ConversationViewEvent {
     /// The reader chose to answer a message.
     Reply(ReplyDraft),
+    /// The reader clicked the picture or clip of a message that has its file:
+    /// the viewer opens on it.
+    OpenMedia { chat: ChatId, message: String },
 }
 
 pub struct ConversationView {
@@ -133,6 +137,8 @@ pub struct ConversationView {
     /// view at the top asks once per change of the state.
     asked_at: Option<u64>,
     stats: Rc<Stats>,
+    /// What the bubbles' pictures, stickers and clips hold between frames.
+    media: BubbleMedia,
     _conversation: Subscription,
 }
 
@@ -175,6 +181,7 @@ impl ConversationView {
             menu: None,
             asked_at: None,
             stats,
+            media: BubbleMedia::default(),
             _conversation: subscription,
         };
         this.rebuild(cx);
@@ -222,6 +229,9 @@ impl ConversationView {
         let (rows, message_rows) = build_rows(&self.views, first_unread);
         self.rows = rows;
         self.message_rows = message_rows;
+        let views = &self.views;
+        self.media
+            .retain(|id| views.iter().any(|view| view.id() == id));
         self.list.reset(self.rows.len());
         self.list.scroll_to_end();
         self.selection = None;
@@ -237,7 +247,7 @@ impl ConversationView {
         let conversation = self.conversation.clone();
         let total = conversation.read(cx).messages.len();
         match *event {
-            ConversationEvent::Loading => {}
+            ConversationEvent::Loading | ConversationEvent::Progress => {}
             ConversationEvent::Reset | ConversationEvent::Removed { .. } => self.rebuild(cx),
             ConversationEvent::Updated { index } => {
                 if total != self.views.len() || index >= total {
@@ -677,6 +687,72 @@ impl ConversationView {
         cx.notify();
     }
 
+    // ----- media -------------------------------------------------------------
+
+    /// Works out which message rows are on screen, from the layout just
+    /// painted: their media plays, and what still has no file is asked for.
+    /// Work happens only when the set of rows changes.
+    fn sync_media(&mut self, cx: &mut Context<Self>) {
+        let shown = self.media.painted.visible(self.list.viewport_bounds());
+        let fresh: Vec<String> = shown
+            .iter()
+            .filter(|id| !self.media_shown(id))
+            .cloned()
+            .collect();
+        self.media.set_shown(shown, cx);
+        if fresh.is_empty() {
+            return;
+        }
+        let auto = self.store.read(cx).auto_download;
+        let wanted: Vec<String> = fresh
+            .into_iter()
+            .filter(|id| {
+                self.conversation
+                    .read(cx)
+                    .message(id)
+                    .and_then(|m| Some((media::Kind::of(&m.content)?, m.content.media()?)))
+                    .is_some_and(|(kind, media)| media::wants_download(kind, media, auto))
+            })
+            .collect();
+        if wanted.is_empty() {
+            return;
+        }
+        let (store, chat) = (self.store.clone(), self.chat.clone());
+        cx.defer(move |cx| {
+            store.update(cx, |store, cx| {
+                for id in &wanted {
+                    store.download(&chat, id, false, cx);
+                }
+            });
+        });
+    }
+
+    fn media_shown(&self, id: &str) -> bool {
+        self.media.is_shown(id)
+    }
+
+    /// A click on a message's picture or clip: the file opens in the viewer,
+    /// a missing one is asked for (a failed one again, with no size limit).
+    pub fn media_clicked(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(view) = self.views.get(index) else {
+            return;
+        };
+        let Some(media) = view.message.content.media() else {
+            return;
+        };
+        let id = view.id().to_owned();
+        if media.path.is_some() {
+            cx.emit(ConversationViewEvent::OpenMedia {
+                chat: self.chat.clone(),
+                message: id,
+            });
+        } else if !matches!(media.state, zapfast::model::MediaState::Downloading) {
+            let chat = self.chat.clone();
+            self.store
+                .update(cx, |store, cx| store.download(&chat, &id, true, cx));
+        }
+    }
+
     // ----- rows --------------------------------------------------------------
 
     fn render_row(&mut self, ix: usize, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
@@ -722,7 +798,21 @@ impl ConversationView {
         }
     }
 
-    fn render_message(&self, index: usize, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
+    fn render_message(
+        &mut self,
+        index: usize,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let progress = self
+            .conversation
+            .read(cx)
+            .progress
+            .get(self.views[index].id())
+            .copied();
+        let picture = self
+            .media
+            .element(index, &self.views[index], progress, palette, cx);
         let view = &self.views[index];
         let outgoing = view.outgoing();
         let group = self.is_group(cx);
@@ -804,7 +894,9 @@ impl ConversationView {
                         ),
                 );
         }
-        if let Some(chip) = &view.chip {
+        if let Some(picture) = picture {
+            bubble = bubble.child(div().mt(px(2.)).mb(px(3.)).child(picture));
+        } else if let Some(chip) = &view.chip {
             bubble = bubble.child(
                 div()
                     .mt(px(2.))
@@ -1245,9 +1337,23 @@ fn pointer_driver(view: WeakEntity<ConversationView>) -> impl IntoElement {
     .inset_0()
 }
 
+/// After the list is laid out, tells the view which rows are on screen, so
+/// the media in them plays (and downloads) and the rest rests.
+fn media_driver(view: WeakEntity<ConversationView>) -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |_, _, _, cx| {
+            view.update(cx, |this, cx| this.sync_media(cx)).ok();
+        },
+    )
+    .absolute()
+    .inset_0()
+}
+
 impl Render for ConversationView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.stats.render();
+        self.media.painted.next_frame();
         self.request_older_if_at_top(cx);
         let p = palette(cx);
         let show_button = !self.at_bottom();
@@ -1292,7 +1398,8 @@ impl Render for ConversationView {
                 )
                 .size_full(),
             )
-            .child(pointer_driver(weak))
+            .child(pointer_driver(weak.clone()))
+            .child(media_driver(weak))
             .when(loading, |root| {
                 root.child(
                     div()
@@ -1646,7 +1753,8 @@ mod tests {
         let viewport = open
             .view
             .read_with(cx, |view, _| view.list.viewport_bounds());
-        let away = point(viewport.right() - px(20.), bounds.top() + px(4.));
+        // The middle of the list is wallpaper: bubbles hug its sides.
+        let away = point(viewport.center().x, bounds.top() + px(4.));
         cx.simulate_mouse_down(away, MouseButton::Left, gpui::Modifiers::none());
         cx.simulate_mouse_up(away, MouseButton::Left, gpui::Modifiers::none());
         settle(cx);
@@ -1870,6 +1978,93 @@ mod tests {
         mine.message.from_me = true;
         mine.message.status = Delivery::Read;
         assert!(message_description(&mine).unwrap().ends_with("Lida"));
+    }
+
+    /// The indexes of the messages that carry a picture, sticker or clip.
+    fn media_messages(view: &Entity<ConversationView>, cx: &mut VisualTestContext) -> Vec<usize> {
+        view.read_with(cx, |view, _| {
+            (0..view.message_count())
+                .filter(|&i| media::Kind::of(&view.message(i).message.content).is_some())
+                .collect()
+        })
+    }
+
+    fn file_of(view: &Entity<ConversationView>, index: usize, cx: &mut VisualTestContext) -> bool {
+        view.read_with(cx, |view, _| {
+            view.message(index)
+                .message
+                .content
+                .media()
+                .is_some_and(|m| m.path.is_some())
+        })
+    }
+
+    #[gpui::test]
+    fn media_on_screen_downloads_and_the_rest_waits(cx: &mut TestAppContext) {
+        let (open, cx) = open(cx, ANA);
+        settle(cx);
+        let all = media_messages(&open.view, cx);
+        assert_eq!(all.len(), 5, "the demo's pictures, stickers and clips");
+        let shown: Vec<bool> = open.view.read_with(cx, |view, _| {
+            all.iter()
+                .map(|&i| view.media.is_shown(view.message(i).id()))
+                .collect()
+        });
+        assert!(shown.iter().any(|&on| on), "some media is on screen");
+        for (&index, &on) in all.iter().zip(&shown) {
+            // Stickers always download; photos and clips follow the setting,
+            // which is on: so what is on screen has its file, the rest not.
+            assert_eq!(file_of(&open.view, index, cx), on, "message {index}");
+        }
+    }
+
+    #[gpui::test]
+    fn a_click_downloads_what_is_missing_and_opens_what_is_there(cx: &mut TestAppContext) {
+        let (open, cx) = open(cx, ANA);
+        settle(cx);
+        let opened = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let seen = opened.clone();
+        let _subscription = cx.update(|_, cx| {
+            cx.subscribe(&open.view, move |_, event: &ConversationViewEvent, _| {
+                if let ConversationViewEvent::OpenMedia { message, .. } = event {
+                    seen.borrow_mut().push(message.clone());
+                }
+            })
+        });
+        let all = media_messages(&open.view, cx);
+        let missing = all
+            .iter()
+            .copied()
+            .find(|&i| !file_of(&open.view, i, cx))
+            .expect("a message whose file was not asked for");
+        open.view
+            .update(cx, |view, cx| view.media_clicked(missing, cx));
+        settle(cx);
+        assert!(file_of(&open.view, missing, cx), "the click downloaded it");
+        assert!(opened.borrow().is_empty(), "and did not open it yet");
+        open.view
+            .update(cx, |view, cx| view.media_clicked(missing, cx));
+        let id = open
+            .view
+            .read_with(cx, |view, _| view.message(missing).id().to_owned());
+        assert_eq!(*opened.borrow(), vec![id], "the second click opens it");
+    }
+
+    #[gpui::test]
+    fn playing_media_does_not_wake_the_list(cx: &mut TestAppContext) {
+        let (open, cx) = open(cx, ANA);
+        settle(cx);
+        let stats = open.view.read_with(cx, |view, _| view.stats.clone());
+        let settled = stats.total_renders();
+        for _ in 0..10 {
+            cx.background_executor.advance_clock(Duration::from_secs(1));
+            settle(cx);
+        }
+        assert_eq!(
+            stats.total_renders(),
+            settled,
+            "an animated sticker redraws itself, never the list"
+        );
     }
 
     #[test]
