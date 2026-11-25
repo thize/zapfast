@@ -555,7 +555,7 @@ protocol. These notes are for coding agents and new contributors.
   and clang to build (`libasound2-dev libpipewire-0.3-dev clang
   libclang-dev` on Debian, `alsa-lib pipewire clang` on Arch). `Action::PlayVoice/SeekVoice` drive the player from
   the bubble, and a clip that ends hands its message back
-  (`Player::take_finished`) so the app plays the next unheard voice message
+  (`Player::take_finished`) so the app plays the next voice message
   of the same run (`App::next_voice_after`), keeping other apps' media paused
   in between; `StartRecording/CancelRecording/SendRecording` the
   microphone from the composer (the send button is a microphone when there

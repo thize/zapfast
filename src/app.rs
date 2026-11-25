@@ -655,7 +655,7 @@ pub struct App {
     /// The replied message the keys asked to go to while it was not loaded:
     /// the list moves to it once history brings it, and stays put until then.
     pending_follow: Option<PendingFollow>,
-    /// Chat whose voice messages carry on into the next unheard one when a
+    /// Chat whose voice messages carry on into the next one when a
     /// clip ends. Leaving the chat, or playing a video, ends the run.
     voice_chat: Option<ChatId>,
     /// Chat of the clip in the player, whose speed it plays at. Unlike
@@ -11057,8 +11057,8 @@ impl App {
         });
     }
 
-    /// Starts the next unheard voice message after one plays to its end, as
-    /// the phone does. Only a clip that finished in the chat the reader is
+    /// Starts the voice message right after one that plays to its end. Only a
+    /// clip that finished in the chat the reader is
     /// still in carries on. A clip that is not downloaded yet is fetched first
     /// and plays when it lands.
     fn continue_voice(&mut self, finished: &str) {
@@ -11095,9 +11095,9 @@ impl App {
         }
     }
 
-    /// The next voice message after `finished` that the reader has not heard
-    /// yet. As on the phone, the run goes through consecutive voice messages:
-    /// the reader's own and those already played here are passed over, and
+    /// The voice message right after `finished`. The run goes through
+    /// consecutive voice messages, the reader's own and those already heard
+    /// included, so they play in order from wherever the reader starts;
     /// anything else, an audio file included, ends it.
     fn next_voice_after(&self, chat: &str, finished: &str) -> Option<String> {
         let conversation = self.conversations.get(chat)?;
@@ -11117,14 +11117,10 @@ impl App {
         if !voice_note(&conversation.messages[position]) {
             return None;
         }
-        conversation.messages[position + 1..]
-            .iter()
-            .take_while(|message| voice_note(message))
-            .find(|message| {
-                !message.from_me
-                    && message.status != Delivery::Played
-                    && !self.played_told.contains(&message.id)
-            })
+        conversation
+            .messages
+            .get(position + 1)
+            .filter(|message| voice_note(message))
             .map(|message| message.id.clone())
     }
 
@@ -20470,7 +20466,7 @@ mod tests {
     }
 
     #[test]
-    fn a_voice_run_goes_through_consecutive_unheard_voice_messages() {
+    fn a_voice_run_goes_through_every_consecutive_voice_message() {
         let mut app = app();
         let chat = "1@s.whatsapp.net";
         app.open_chat = Some(chat.into());
@@ -20500,8 +20496,18 @@ mod tests {
 
         assert_eq!(
             app.next_voice_after(chat, "played").as_deref(),
+            Some("own"),
+            "the reader's own voice message plays next"
+        );
+        assert_eq!(
+            app.next_voice_after(chat, "own").as_deref(),
+            Some("heard"),
+            "and one already heard on the phone"
+        );
+        assert_eq!(
+            app.next_voice_after(chat, "heard").as_deref(),
             Some("waiting"),
-            "own voice messages and those already heard are passed over"
+            "and one not heard yet"
         );
         assert_eq!(
             app.next_voice_after(chat, "waiting"),

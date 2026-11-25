@@ -538,7 +538,7 @@ speed, and the chip there changes only that chat. Pick **Default** to follow
 the speed of the other chats again. A voice message keeps playing when you
 open another chat, with a bar under the header there to pause it, stop it, or
 go back to it. When a voice message ends, playback carries on through the
-voice messages right after it that you have not heard yet, as on the phone;
+voice messages right after it, yours and those already heard included;
 any other message ends the run. The speaker's pitch stays the same at every
 speed. The first play sends
 a played receipt, so your phone marks the voice message as heard. With read
