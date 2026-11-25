@@ -1,10 +1,23 @@
-# ZapFast GPUI (phase 2: the app skeleton)
+# ZapFast GPUI (phases 2 and 3: the app, with media)
 
 ZapFast's WhatsApp backend with a GPUI interface. This crate is a workspace of its own (own `Cargo.lock`), so the root `zapfast` package and its lock stay as upstream has them. It depends on the backend with `zapfast = { path = "..", default-features = false }`: no egui, no eframe.
 
 The name is provisional and lives in one file, `src/brand.rs` (`APP_NAME`, `APP_ID`). Everything that must differ from an installed ZapFast is derived from `APP_ID`.
 
-Phase 2 is the base: isolation, the bridge to the backend, the state as GPUI entities, a demo, and a skeleton window. The screens (login, chat list, conversation) are built on it, see `src/views/README.md`; media is phase 3.
+Phase 2 is the base: isolation, the bridge to the backend, the state as GPUI entities, a demo, the screens (login with QR, chat list, conversation, composer; see `src/views/README.md`). Phase 3 (this branch) adds what the bubbles and the desktop need, below.
+
+## Phase 3: what is in
+
+| What | Where |
+| --- | --- |
+| Pictures, stickers (static, animated, Lottie) and video posters in the bubbles, with the small preview that comes with the message until the file is there, a ring while it downloads and "Tentar de novo" on failure. Downloads start when the row comes on screen (stickers always, the rest follow the setting) and a click on a missing file asks for it with no size limit. | `src/views/media.rs`, the `media-gpui` crate (a path dependency) |
+| GIFs play in a loop while on screen; a video plays in its bubble on a click (muted). Real MP4/H.264, decoded by the core's decoder (`zapfast::video::decode_in_background`, the one core change of this phase) on one thread, paced by a second one; nothing runs while a clip is paused or scrolled away. | `src/views/clip.rs` |
+| Picture viewer over the window: zoom by wheel, pinch, + / - (up to 8x) around the pointer, drag to pan, the chat's other pictures with the arrow keys, Esc or a click beside the picture to leave. | `src/views/viewer.rs` |
+| Settings page (the menu button of the chat list): theme (system, light, dark), notifications and their content, automatic media download, read receipts. The core's `Settings` file, in this app's own config folder; written 400 ms after the last change and on quit. | `src/state/settings.rs`, `src/views/settings.rs` |
+| Notifications for messages that arrive while the window is away from that chat (not for our own, muted or looked-at ones); a click opens the chat. `fastframe-notifications` under this app's own bundle id. | `src/platform/notify.rs` |
+| Tray item (Open, Quit) and Dock badge with the unread-chat count (unarchived, unmuted, unlocked). `fastframe-tray` and `fastframe-dock` under this app's own id. | `src/platform/tray.rs`, `src/platform/install.rs` |
+
+All of it follows the idle rule: no timer and no polling. `--bench idle` still prints `renders=0`; a playing GIF redraws its own surface, never the list.
 
 ## Run
 
@@ -69,18 +82,19 @@ Views --intents--> Store --Command--> CommandSink (the Backend, or the demo's Re
 | --- | --- |
 | `--demo` | Synthetic data through the same event path; no account, no disk, no instance lock. |
 | `--bench idle --seconds N` | Prints `BENCH idle renders=<renders of the root view after the first 2 s> seconds=N` and quits. Renders within 300 ms of a focus change are not counted. Runs on demo data. |
-| `--snapshot DIR` | Saves `login.png` and `chats.png` (more as screens land) via `Window::render_to_image`, and quits. Demo data. |
+| `--snapshot DIR` | Saves `login`, `login-phone`, `chats`, `chat`, `chat-selection`, `chat-reply`, `chat-reactions`, `chat-photo`, `viewer`, `viewer-zoom` and `settings` (`.png`) via `Window::render_to_image`, and quits. Demo data (Ana's chat carries a photo, two stickers, a video and a GIF from `assets/demo`). |
 | `--appearance light\|dark` | Forces a palette instead of following the OS. |
 
 Automated runs (`--bench`, `--snapshot`) never take focus: macOS Accessory policy set before the run loop (`WindowingRequest::Headless`), unfocused window in the bottom-right corner. `ZAPFAST_GPUI_LOG=1` prints GPUI's `log` lines.
 
 ## Left for later
 
-- The screens: login with QR (the model is ready: `Session::qr`), chat list, conversation, composer, quotes, reactions. They run on the demo.
-- Phase 3: media (photos, GIF, WebP, Lottie, video, audio, stickers, documents). Non-text messages are a chip until then.
-- Tray, Dock badge and notifications (the spike has them; `StoreEvent::Incoming` is where a notification hooks in), settings, multiple accounts, attachments, calls, search in messages, pinned messages.
-- Reading the account's settings (read receipts are on until then), a toast layer for `StoreEvent::Error`/`Info`/`SendRefused`.
-- Packaging: a signed `.app` with bundle id `me.paolino.zapfast-gpui` (`identity::bundle_id`) for notifications and the login item.
+- Sound: a video plays muted (the core's AAC and stretch pipeline is private to `src/video.rs`); voice messages, audio and documents are still chips.
+- A round video message is drawn as a circle, and a video can be played in the viewer too: neither is done.
+- Settings that need the egui app's machinery: custom themes, wallpaper choices, the app lock, per-chat notification limits, sounds for notifications, "Enter sends", the download folder, a proxy.
+- A toast layer for `StoreEvent::Error`/`Info`/`SendRefused`; scrolling to the announced message when a notification is clicked (it opens the chat).
+- Multiple accounts, attachments, calls, search in messages, pinned messages, starred, archived and locked chats.
+- Packaging: a signed `.app` with bundle id `me.paolino.zapfast-gpui` (`identity::bundle_id`); macOS delivers notifications only from a bundle, and `cargo run` is not one.
 - Windows and Linux were not run.
 
 ## Manual checklist (macOS)
@@ -95,3 +109,7 @@ Automated runs (`--bench`, `--snapshot`) never take focus: macOS Accessory polic
 - [ ] CPU at rest: with the window focused and unfocused, Activity Monitor stays near 0%; `cargo run -- --bench idle --seconds 8` prints `renders=0`.
 - [ ] Light and dark follow the OS without restarting.
 - [ ] No update check is made (Little Snitch or `nettop` shows no request to ZapFast's update host).
+- [ ] Media: a photo, a sticker (animated too), a GIF and a video from the phone appear in the bubbles with the preview first; scroll them out of view and Activity Monitor drops to about 0%.
+- [ ] Viewer: open a photo, zoom with the wheel and with a trackpad pinch, drag, move between pictures with the arrows, leave with Esc.
+- [ ] Settings: flip the theme, notifications and downloads; quit and reopen: they stayed. The file is `settings.json` in the app's config folder, not ZapFast's.
+- [ ] Notifications and badge (need a `.app` bundle with bundle id `me.paolino.zapfast-gpui`): message arrives while another app is in front, the banner shows once, a click opens that chat; the Dock tile shows the unread-chat count and the menu-bar item's menu opens and quits.
