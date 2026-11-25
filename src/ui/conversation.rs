@@ -3750,8 +3750,8 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat, under: f32) {
                                     // the message: its check box, text, links and media,
                                     // and the strip beside it, from one edge of the view
                                     // to the other (#241). Registered after the row, so
-                                    // it takes those clicks, and drags, which sweep
-                                    // messages rather than text (#246).
+                                    // it takes those clicks, and drags, which select
+                                    // neither messages nor text.
                                     // Half the gap to each neighbour, so the space
                                     // between rows picks one of them too.
                                     let row = Rect::from_x_y_ranges(
@@ -3851,12 +3851,13 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat, under: f32) {
                                             );
                                         });
                                     }
-                                    if pick.drag_started() {
-                                        actions.push(Action::SweepMessages {
-                                            anchor: message.id.clone(),
-                                            to: message.id.clone(),
-                                        });
-                                    }
+                                    // As in WhatsApp Web, a drag picks no messages,
+                                    // but a click that slips and lets go on the
+                                    // row it pressed still picks that row.
+                                    let slipped = pick.drag_stopped()
+                                        && ui
+                                            .input(|input| input.pointer.interact_pos())
+                                            .is_some_and(|pos| row.contains(pos));
                                     let keyboard_clicked = (pick.clicked() && pick.has_focus()
                                         || response.clicked() && response.has_focus())
                                         && ui.input(|input| {
@@ -3897,7 +3898,7 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat, under: f32) {
                                     });
                                     if selectable
                                         && !keyboard_clicked
-                                        && (response.clicked() || pick.clicked())
+                                        && (response.clicked() || pick.clicked() || slipped)
                                     {
                                         let shift = ui.input(|input| input.modifiers.shift);
                                         actions.push(if shift {
@@ -4898,8 +4899,8 @@ fn bubble(
     .max(0.0);
     // Register the empty strip beside the bubble from its previous rect, before
     // the row, so the avatar, the bubble, and the reactions win clicks, and the
-    // text wins drags. A drag that starts here, off the text, sweeps messages
-    // into a selection (#246).
+    // text wins drags. A drag that starts here, off the text, selects nothing:
+    // as in WhatsApp Web, dragging does not select messages.
     let id = bubble_id(&view.chat.id, &message.id);
     let previous = ui.ctx().data(|data| data.get_temp::<Rect>(id.with("rect")));
     if let Some(rect) = previous {
@@ -4907,12 +4908,6 @@ fn bubble(
         let strip = ui.interact(strip, id.with("row"), Sense::click_and_drag());
         if strip.clicked() {
             actions.push(Action::FocusComposer);
-        }
-        if strip.drag_started() {
-            actions.push(Action::SweepMessages {
-                anchor: message.id.clone(),
-                to: message.id.clone(),
-            });
         }
         reply_on_double_click(&strip, message, actions);
     }
