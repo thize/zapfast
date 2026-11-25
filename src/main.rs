@@ -451,7 +451,7 @@ fn run() -> eframe::Result<()> {
             let geometry = if demo_persistence.is_some() {
                 fastframe_shell::window::Geometry::default()
             } else {
-                lease.peek(|app: &app::App| app.settings.window_geometry())
+                lease.peek(|app: &app::App| app.settings.window_geometry().into())
             };
             #[cfg(feature = "demo")]
             let shot = shot.clone();

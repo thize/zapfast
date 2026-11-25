@@ -404,6 +404,44 @@ pub enum NotificationSound {
     Custom(std::path::PathBuf),
 }
 
+/// A window's size, position and maximized state, in logical pixels, as the
+/// settings remember them in the flat `window_*` fields. The same three values
+/// fastframe-shell's `Geometry` holds, which the `egui-ui` window converts
+/// from and to.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WindowGeometry {
+    /// The inner (content) size, `[width, height]`; `None` keeps the default.
+    pub size: Option<[f32; 2]>,
+    /// The position of the outer frame's top-left corner, except on macOS,
+    /// where it is the content's; `None` lets the window manager place it.
+    pub position: Option<[f32; 2]>,
+    /// Whether the window was maximized. `size` and `position` stay those of
+    /// the normal window behind it.
+    pub maximized: bool,
+}
+
+#[cfg(feature = "egui-ui")]
+impl From<fastframe_shell::window::Geometry> for WindowGeometry {
+    fn from(geometry: fastframe_shell::window::Geometry) -> Self {
+        Self {
+            size: geometry.size,
+            position: geometry.position,
+            maximized: geometry.maximized,
+        }
+    }
+}
+
+#[cfg(feature = "egui-ui")]
+impl From<WindowGeometry> for fastframe_shell::window::Geometry {
+    fn from(geometry: WindowGeometry) -> Self {
+        Self {
+            size: geometry.size,
+            position: geometry.position,
+            maximized: geometry.maximized,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -534,7 +572,7 @@ pub struct Settings {
     /// How long ZapFast may go unused before the app lock locks it.
     pub app_lock_after: AutoLock,
     /// Last window width in logical pixels (points at zoom 1), remembered
-    /// across restarts; see [`fastframe_shell::window::Geometry`]. `None`
+    /// across restarts; see [`WindowGeometry`]. `None`
     /// uses the default size.
     pub window_width: Option<f32>,
     /// Last window height in logical pixels. See [`Self::window_width`].
@@ -662,8 +700,8 @@ impl Settings {
 
     /// The remembered window geometry for the next window. A size or
     /// position counts only when both of its values are there.
-    pub fn window_geometry(&self) -> fastframe_shell::window::Geometry {
-        fastframe_shell::window::Geometry {
+    pub fn window_geometry(&self) -> WindowGeometry {
+        WindowGeometry {
             size: self
                 .window_width
                 .zip(self.window_height)
@@ -674,7 +712,7 @@ impl Settings {
     }
 
     /// Stores the window geometry in the settings' own fields.
-    pub fn set_window_geometry(&mut self, geometry: fastframe_shell::window::Geometry) {
+    pub fn set_window_geometry(&mut self, geometry: WindowGeometry) {
         (self.window_width, self.window_height) = geometry.size.map(|[w, h]| (w, h)).unzip();
         (self.window_x, self.window_y) = geometry.position.map(|[x, y]| (x, y)).unzip();
         self.window_maximized = geometry.maximized;
@@ -1099,32 +1137,23 @@ mod tests {
         // Files written before the window was remembered open with the
         // default size.
         let settings = Settings::default();
-        assert_eq!(
-            settings.window_geometry(),
-            fastframe_shell::window::Geometry::default()
-        );
+        assert_eq!(settings.window_geometry(), WindowGeometry::default());
         let older: Settings = serde_json::from_str(r#"{"zoom":1.25}"#).unwrap();
-        assert_eq!(
-            older.window_geometry(),
-            fastframe_shell::window::Geometry::default()
-        );
+        assert_eq!(older.window_geometry(), WindowGeometry::default());
         // Half a size or position is no size or position.
         let half = Settings {
             window_width: Some(1280.0),
             window_x: Some(100.0),
             ..Settings::default()
         };
-        assert_eq!(
-            half.window_geometry(),
-            fastframe_shell::window::Geometry::default()
-        );
+        assert_eq!(half.window_geometry(), WindowGeometry::default());
     }
 
-    /// The geometry fastframe-shell remembers lands in the settings' own
-    /// fields and comes back from a saved file unchanged.
+    /// The remembered geometry lands in the settings' own fields and comes back
+    /// from a saved file unchanged.
     #[test]
     fn the_window_geometry_round_trips_through_the_settings_file() {
-        let geometry = fastframe_shell::window::Geometry {
+        let geometry = WindowGeometry {
             size: Some([1280.0, 800.0]),
             position: Some([100.0, 50.0]),
             maximized: true,
@@ -1152,11 +1181,54 @@ mod tests {
         assert_eq!(loaded.window_geometry(), geometry);
 
         // Without a position (Wayland) none is stored.
-        remembered.set_window_geometry(fastframe_shell::window::Geometry {
+        remembered.set_window_geometry(WindowGeometry {
             position: None,
             ..geometry
         });
         assert_eq!((remembered.window_x, remembered.window_y), (None, None));
+    }
+
+    /// The window's geometry is not a file format of its own: the settings keep
+    /// it in flat fields that fastframe-shell's `Geometry` never touched, and
+    /// the two types hold the same three values.
+    #[cfg(feature = "egui-ui")]
+    #[test]
+    fn the_window_geometry_converts_to_fastframe_shells_and_back() {
+        for geometry in [
+            fastframe_shell::window::Geometry::default(),
+            fastframe_shell::window::Geometry {
+                size: Some([1280.0, 800.0]),
+                position: None,
+                maximized: false,
+            },
+            fastframe_shell::window::Geometry {
+                size: Some([640.5, 480.25]),
+                position: Some([-12.0, 50.0]),
+                maximized: true,
+            },
+        ] {
+            let ours = WindowGeometry::from(geometry);
+            assert_eq!(
+                (ours.size, ours.position, ours.maximized),
+                (geometry.size, geometry.position, geometry.maximized)
+            );
+            assert_eq!(fastframe_shell::window::Geometry::from(ours), geometry);
+
+            let mut settings = Settings::default();
+            settings.set_window_geometry(ours);
+            let written = serde_json::to_value(&settings).unwrap();
+            assert_eq!(
+                written["window_width"],
+                serde_json::json!(geometry.size.map(|s| s[0]))
+            );
+            assert_eq!(
+                written["window_y"],
+                serde_json::json!(geometry.position.map(|p| p[1]))
+            );
+            assert_eq!(written["window_maximized"], geometry.maximized);
+            let read: Settings = serde_json::from_value(written).unwrap();
+            assert_eq!(read.window_geometry(), ours);
+        }
     }
 
     fn load_from(contents: &str) -> (Settings, serde_json::Value) {

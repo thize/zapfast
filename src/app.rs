@@ -7150,9 +7150,9 @@ impl App {
     /// settings, in logical pixels, so a window saved while zoomed opens at
     /// the same size; see [`fastframe_shell::window::Geometry`].
     fn sync_window_state(&mut self, ctx: &egui::Context) {
-        let mut geometry = self.settings.window_geometry();
+        let mut geometry = fastframe_shell::window::Geometry::from(self.settings.window_geometry());
         if geometry.remember(ctx) {
-            self.settings.set_window_geometry(geometry);
+            self.settings.set_window_geometry(geometry.into());
             self.mark_settings_dirty();
         }
     }
