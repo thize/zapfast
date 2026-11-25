@@ -28,6 +28,8 @@ gpui = { package = "gpui-pre", version = "=0.3.14", features = ["test-support"] 
 # The gallery example opens a real window.
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.14", features = ["font-kit", "runtime_shaders"] }
 tempfile = "3"
+# CPU time of the gallery example's benchmarks (getrusage).
+libc = "0.2"
 
 # GPUI is unusably slow unoptimized; same profile as the spike.
 [profile.dev]
