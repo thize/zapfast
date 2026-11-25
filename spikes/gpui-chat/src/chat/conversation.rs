@@ -95,6 +95,18 @@ impl ConversationView {
         &self.convo.messages[index]
     }
 
+    /// The first row the list shows (tests).
+    #[cfg(test)]
+    pub fn list_top_item(&self) -> usize {
+        self.list.logical_scroll_top().item_ix
+    }
+
+    /// Whether the scroll benchmark ran to its end and reported.
+    #[cfg(test)]
+    pub fn bench_finished(&self) -> bool {
+        self.bench.is_none()
+    }
+
     pub fn message_count(&self) -> usize {
         self.convo.messages.len()
     }
@@ -559,6 +571,7 @@ impl ConversationView {
             return;
         };
         let rows = self.convo.rows.len();
+        let bench_paced = bench.paced;
         match bench.tick(Instant::now()) {
             BenchPhase::Warmup => {}
             BenchPhase::Running(progress) => {
@@ -577,15 +590,30 @@ impl ConversationView {
                 eprintln!(
                     "frame CPU cost (render to paint): p50={p50:.2} ms p95={p95:.2} ms max={max:.2} ms"
                 );
+                let paints = self.stats.paint_gaps_ms();
+                let mut sorted = paints.clone();
+                sorted.sort_by(f64::total_cmp);
+                eprintln!(
+                    "gaps between paints (frame cost jitter included): p50={:.2} ms p95={:.2} ms max={:.2} ms",
+                    crate::bench::percentile(&sorted, 0.5),
+                    crate::bench::percentile(&sorted, 0.95),
+                    sorted.last().copied().unwrap_or(0.0),
+                );
                 if let Some(note) = scroll_note(&gaps) {
                     // stderr: stdout carries only the PID and BENCH lines.
                     eprintln!("{note}");
                 }
+                // Frames may still be drawn before the app has quit.
+                self.bench = None;
                 cx.quit();
                 return;
             }
         }
-        window.request_animation_frame();
+        // Paced runs ask the display link for the next frame; otherwise the
+        // benchmark's loop (`app::scroll_bench`) draws it.
+        if bench_paced {
+            window.request_animation_frame();
+        }
     }
 }
 

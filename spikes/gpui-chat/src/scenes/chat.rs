@@ -223,6 +223,40 @@ mod tests {
         assert_eq!(count(&stats), focused, "the caret made the list render");
     }
 
+    /// The scroll benchmark must not wait for the platform's frames: a hidden
+    /// window gets none (the run used to hang), and the benchmark's own loop
+    /// draws them. Here nothing but the test draws, as in a hidden window.
+    #[gpui::test]
+    fn the_scroll_bench_finishes_without_platform_frames(cx: &mut TestAppContext) {
+        use crate::bench::ScrollBench;
+        cx.update(|cx| {
+            cx.set_global(ActivePalette(Palette::dark()));
+            gpui_component::init(cx);
+        });
+        let stats = Stats::new();
+        let scene_stats = stats.clone();
+        let (scene, cx) = cx.add_window_view(move |window, cx| {
+            let bench = ScrollBench::with_warmup(1, false, std::time::Duration::ZERO);
+            ChatScene::new(generate(SEED, 2000), scene_stats, Some(bench), window, cx)
+        });
+        let view = scene.read_with(cx, |scene, _| scene.conversation.clone());
+        let mut frames = 0;
+        while !view.read_with(cx, |view, _| view.bench_finished()) {
+            assert!(frames < 100, "a one second run is 60 frames, not {frames}");
+            view.update(cx, |_, cx| cx.notify());
+            draw(cx);
+            frames += 1;
+        }
+        // 60 running frames and the one that reports; the window's own first
+        // draw was the run's first frame.
+        assert_eq!(frames, 60);
+        // 60 frames from the second one on are recorded (the first turns
+        // recording on after its render began), the reporting one included.
+        assert_eq!(stats.frame_gaps_ms().len(), 59);
+        let top = view.read_with(cx, |view, _| view.list_top_item());
+        assert!(top < 100, "the run ends at the top, not at row {top}");
+    }
+
     /// What Edit > Copy, Paste and Select All send reaches the composer.
     #[gpui::test]
     fn the_edit_menu_actions_work_in_the_composer(cx: &mut TestAppContext) {

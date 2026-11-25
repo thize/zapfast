@@ -69,6 +69,14 @@ pub struct Cli {
     /// Shows a Dock badge of 3 for ten seconds (a regular, unfocused app, so
     /// the Dock has a tile to put it on), then quits.
     pub probe_badge: bool,
+    /// `--bench scroll` takes its frames from the display link, as an
+    /// interactive run does, instead of drawing them back to back.
+    pub paced: bool,
+    /// Minimizes the window right after opening it: the platform then reports
+    /// it `Hidden` and delivers no frames, which is how a window covered by
+    /// other windows behaves. For checking that the benchmarks do not depend
+    /// on the window being shown.
+    pub minimize: bool,
 }
 
 impl Cli {
@@ -128,6 +136,8 @@ impl Cli {
                         ));
                     }
                 },
+                "--paced" => cli.paced = true,
+                "--minimize" => cli.minimize = true,
                 "--jump" => {
                     cli.jump = Some(
                         args.next()
@@ -151,7 +161,13 @@ pub const ACTIVATION_GRACE: Duration = Duration::from_millis(300);
 #[derive(Default)]
 pub struct Stats {
     renders: RefCell<Vec<Instant>>,
+    /// When each frame painted, and when each began (its render), recorded
+    /// only while the benchmark runs.
     frames: RefCell<Vec<Instant>>,
+    starts: RefCell<Vec<Instant>>,
+    /// Frames the benchmark had to draw itself because the platform delivered
+    /// none (the window was hidden), see `pump`.
+    pumped: Cell<usize>,
     recording_frames: Cell<bool>,
     activations: RefCell<Vec<Instant>>,
     /// Time from `render` to the paint of the same frame, in milliseconds: the
@@ -169,6 +185,9 @@ impl Stats {
         let now = Instant::now();
         self.renders.borrow_mut().push(now);
         self.last_render.set(Some(now));
+        if self.recording_frames.get() {
+            self.starts.borrow_mut().push(now);
+        }
     }
 
     pub fn frame(&self) {
@@ -227,14 +246,37 @@ impl Stats {
             .count()
     }
 
-    /// Milliseconds between consecutive painted frames.
+    /// Milliseconds between the starts of consecutive frames (their renders).
+    ///
+    /// A frame starts when the display link ticks, so these gaps are the
+    /// display's cadence plus the scheduler's jitter. The gaps between paints
+    /// ([`Self::paint_gaps_ms`]) add the frame's own cost variation on top: a
+    /// frame that takes 7 ms followed by one that takes 10 ms puts their paints
+    /// 3 ms further apart than a vsync, with no frame dropped.
     pub fn frame_gaps_ms(&self) -> Vec<f64> {
-        self.frames
-            .borrow()
-            .windows(2)
-            .map(|w| (w[1] - w[0]).as_secs_f64() * 1000.0)
-            .collect()
+        gaps_ms(&self.starts.borrow())
     }
+
+    /// Milliseconds between consecutive painted frames.
+    pub fn paint_gaps_ms(&self) -> Vec<f64> {
+        gaps_ms(&self.frames.borrow())
+    }
+
+    /// One more frame drawn by the benchmark itself.
+    pub fn pumped(&self) {
+        self.pumped.set(self.pumped.get() + 1);
+    }
+
+    pub fn pumped_frames(&self) -> usize {
+        self.pumped.get()
+    }
+}
+
+fn gaps_ms(times: &[Instant]) -> Vec<f64> {
+    times
+        .windows(2)
+        .map(|w| (w[1] - w[0]).as_secs_f64() * 1000.0)
+        .collect()
 }
 
 /// The value at percentile `p` (0.0..=1.0) of ascending-sorted `sorted`,
@@ -259,13 +301,14 @@ pub fn scroll_line(gaps_ms: &[f64]) -> String {
     )
 }
 
-/// A note (printed to stderr) when the numbers are probably affected by the
-/// window running unfocused: frames then come at about half the display rate.
+/// A note (printed to stderr) when the frames came slower than 30 Hz: a paced
+/// run whose window is covered, on another Space or on a sleeping display is
+/// not given frames at the display's rate (or at all).
 pub fn scroll_note(gaps_ms: &[f64]) -> Option<String> {
     let mut sorted = gaps_ms.to_vec();
     sorted.sort_by(f64::total_cmp);
-    (percentile(&sorted, 0.50) > 24.0).then(|| {
-        "BENCH note=frame gaps cluster near 33 ms: the window is probably unfocused or occluded, which paces frames at 30 Hz; see the CPU cost line for what the frames themselves take".to_owned()
+    (percentile(&sorted, 0.50) > 33.0).then(|| {
+        "BENCH note=frame gaps above 33 ms: the platform is not delivering frames at 30 Hz (a hidden window, a busy machine or a low-power display policy); see the CPU cost line for what the frames themselves take".to_owned()
     })
 }
 
@@ -273,12 +316,20 @@ pub fn idle_line(renders: usize, seconds: u64) -> String {
     format!("BENCH idle renders={renders} seconds={seconds}")
 }
 
+/// Frames per second a 60 Hz display shows: `--seconds N` is `N * 60` frames.
+pub const FRAMES_PER_SECOND: u64 = 60;
+
 /// Drives the scroll benchmark: a short warm-up at the bottom, then a constant
-/// rate from the last row to the first.
+/// number of rows per frame from the last row to the first (the same 21 rows
+/// a frame that a 60 Hz run scrolls), so the work per frame does not depend on
+/// how fast frames come.
 pub struct ScrollBench {
-    pub duration: Duration,
+    total_frames: u64,
+    frame: u64,
+    /// Frames come from the display link (`--paced`) rather than from the
+    /// benchmark's own loop.
+    pub paced: bool,
     warmup_until: Instant,
-    started: Option<Instant>,
 }
 
 pub enum BenchPhase {
@@ -289,25 +340,30 @@ pub enum BenchPhase {
 }
 
 impl ScrollBench {
-    pub fn new(seconds: u64) -> Self {
+    pub fn new(seconds: u64, paced: bool) -> Self {
+        Self::with_warmup(seconds, paced, Duration::from_millis(1500))
+    }
+
+    pub fn with_warmup(seconds: u64, paced: bool, warmup: Duration) -> Self {
         Self {
-            duration: Duration::from_secs(seconds),
-            warmup_until: Instant::now() + Duration::from_millis(1500),
-            started: None,
+            total_frames: seconds * FRAMES_PER_SECOND,
+            frame: 0,
+            paced,
+            warmup_until: Instant::now() + warmup,
         }
     }
 
+    /// Called once per frame.
     pub fn tick(&mut self, now: Instant) -> BenchPhase {
         if now < self.warmup_until {
             return BenchPhase::Warmup;
         }
-        let started = *self.started.get_or_insert(now);
-        let progress = (now - started).as_secs_f32() / self.duration.as_secs_f32();
-        if progress >= 1.0 {
-            BenchPhase::Done
-        } else {
-            BenchPhase::Running(progress)
+        if self.frame >= self.total_frames {
+            return BenchPhase::Done;
         }
+        let progress = self.frame as f32 / self.total_frames as f32;
+        self.frame += 1;
+        BenchPhase::Running(progress)
     }
 }
 
@@ -330,6 +386,8 @@ mod tests {
         );
         assert_eq!(cli.scene, SceneKind::Media);
         assert_eq!(parse(&[]).unwrap().bench, None);
+        assert!(!parse(&["--bench", "scroll"]).unwrap().paced);
+        assert!(parse(&["--bench", "scroll", "--paced"]).unwrap().paced);
         assert_eq!(
             parse(&["--bench", "idle"]).unwrap().bench,
             Some((BenchKind::Idle, 8))
@@ -374,18 +432,23 @@ mod tests {
     }
 
     #[test]
-    fn the_scroll_bench_warms_up_then_runs_then_finishes() {
-        let mut bench = ScrollBench::new(2);
+    fn the_scroll_bench_warms_up_then_runs_a_fixed_number_of_frames() {
+        let mut bench = ScrollBench::new(2, false);
         let start = Instant::now();
         assert!(matches!(bench.tick(start), BenchPhase::Warmup));
         let after = start + Duration::from_millis(1600);
-        assert!(matches!(bench.tick(after), BenchPhase::Running(p) if p < 0.01));
-        assert!(
-            matches!(bench.tick(after + Duration::from_secs(1)), BenchPhase::Running(p) if (0.45..0.55).contains(&p))
-        );
-        assert!(matches!(
-            bench.tick(after + Duration::from_secs(3)),
-            BenchPhase::Done
-        ));
+        let mut last = -1.0;
+        for _ in 0..120 {
+            match bench.tick(after) {
+                BenchPhase::Running(p) => {
+                    assert!(p > last && p < 1.0);
+                    last = p;
+                }
+                _ => panic!("two seconds are 120 frames"),
+            }
+        }
+        assert!(last > 0.99);
+        assert!(matches!(bench.tick(after), BenchPhase::Done));
+        assert!(matches!(bench.tick(after), BenchPhase::Done));
     }
 }

@@ -23,8 +23,10 @@ Keys: Cmd+J cycles messages 2500, 5000, 7500 (placed exactly at the top, brief h
 | --- | --- |
 | `--scene chat\|media\|platform` | Scene shown at start. |
 | `--bench idle --seconds N` | Prints `BENCH idle renders=<renders of the conversation view during the last N-2 s> seconds=N`, quits. Renders within 300 ms of the window gaining or losing focus are not counted: GPUI redraws every view then, which is the user's doing, not idle repainting. |
-| `--bench video --seconds N` | Runs the Media scene's synthetic call video alone (640x360, 30 fps, a new image per frame). Prints `BENCH video frames=<n> fps=<x> p95_ms=<y>`: frames painted after the first second, their rate over the time until the end, and the 95th percentile of each frame's cost from `render` to the end of its `paint` (the atlas upload happens inside it). Stderr has the average, the gaps between painted frames, the background generation time, the frames made but never painted, resident memory and the window's visibility. |
-| `--bench scroll --seconds N` | Scrolls from the last row to the first at a constant rate in rows per second (after 1.5 s of warm-up); prints `BENCH scroll frames=.. p50_ms=.. p95_ms=.. max_ms=..` and quits. Stderr gets the CPU cost per frame (render to paint) and, when the gaps look throttled, a `BENCH note=` line. |
+| `--bench scroll --seconds N` | Scrolls from the last row to the first in `N * 60` frames (21 rows per frame for the 10,400-row conversation), after 1.5 s of warm-up, and prints `BENCH scroll frames=.. p50_ms=.. p95_ms=.. max_ms=..`: the gaps between the starts of consecutive frames (their renders). The frames are drawn by the benchmark itself, back to back (`Window::draw` in a loop), so a gap is what a frame costs, and the run does not depend on the OS delivering frames: not on focus, on Low Power Mode or on the window being covered. Stderr gets the CPU cost per frame (render to paint) and the gaps between paints. If nothing comes of it within `10 + 4N` s it prints `BENCH scroll error=...` and exits 1: it never hangs. |
+| `--paced` | With `--bench scroll`: frames come from the display link, as in an interactive run (see Background mode). Gaps then sit at the display's 16.7 ms with 0.1 ms of scheduler noise, so `p95_ms` lands within 0.1 ms of 16.7 on either side, and a window the platform reports `Hidden` gets no frames: the run ends with the error line above. |
+| `--minimize` | Minimizes the window right after it opens, so the platform reports it `Hidden` and delivers no frames (what a window covered by other windows does). To check that the benchmarks do not depend on visibility. |
+| `--bench video --seconds N` | Runs the Media scene's synthetic call video alone (640x360, 30 fps, a new image per frame). Prints `BENCH video frames=<n> fps=<x> p95_ms=<y>`: frames painted after the first second, their rate over the time until the end, and the 95th percentile of each frame's cost from `render` to the end of its `paint` (the atlas upload happens inside it). While the window is `Hidden` the platform paints nothing, so the benchmark draws the frames itself every 4 ms (`draw_while_hidden`). Stderr has the average, the gaps between painted frames, the background generation time, the frames made but never painted, resident memory, the window's visibility at the end and how many frames the benchmark drew itself. |
 | `--snapshot DIR` | Saves `chat.png`, `chat-selection.png` (a selection across five bubbles), `media.png`, `media-2.png`, `media-3.png` (the Media column scrolled by 0, 900 and 1800 px), `platform.png` via `Window::render_to_image`, which GPUI only compiles with its `test-support` feature (the default `snapshot` feature here). |
 | `--jump N` | Opens with message N at the top (handy with `--snapshot`). |
 | `--appearance light\|dark` | Forces a palette instead of following the OS. |
@@ -32,7 +34,7 @@ Keys: Cmd+J cycles messages 2500, 5000, 7500 (placed exactly at the top, brief h
 | `--probe badge` | A regular (Dock-visible) but never activated app puts 3 on its Dock tile for 10 s, prints `PROBE badge count=3`, clears it, quits. |
 | `--a11y-dump FILE` | While any accessibility client is attached, writes GPUI's accessibility tree (`Window::debug_a11y_tree_json`) to FILE after each render. |
 
-`PID <pid>` is printed at startup; stdout carries nothing else besides the BENCH/SNAPSHOT/PROBE lines. `ZAPFAST_SPIKE_TRACE=1` prints render timestamps (idle) and painted video frames (video). `ZAPFAST_SPIKE_LOG=1` prints GPUI's `log` lines (notification and accessibility outcomes appear only there).
+`PID <pid>` is printed at startup; stdout carries nothing else besides the BENCH/SNAPSHOT/PROBE lines. `ZAPFAST_SPIKE_TRACE=1` prints render timestamps (idle), painted video frames (video) and every change of the window's visibility. `ZAPFAST_SPIKE_LOG=1` prints GPUI's `log` lines (notification and accessibility outcomes appear only there).
 
 ### Media scene
 
@@ -61,18 +63,29 @@ Checked against the real macOS accessibility API (what VoiceOver reads), with Sy
 
 ### Background mode
 
-Every automated run (`--bench`, `--snapshot`) never takes focus: the activation policy is Accessory (no Dock icon, never activated), `cx.activate` is not called, and the window opens unfocused in the bottom-right corner. An unfocused window is paced at about 30 Hz (frame gaps near 33 ms), so the scroll bench's gaps measure the display pacing; the CPU cost line is what the frames themselves take. Interactive runs behave normally.
+Every automated run (`--bench`, `--snapshot`) never takes focus: the activation policy is Accessory (no Dock icon, never activated), `cx.activate` is not called, and the window opens unfocused in the bottom-right corner. Interactive runs behave normally.
+
+Three things about frames in such a run, each found by a failing benchmark:
+
+- **GPUI throttles unfocused windows to 30 fps by itself.** `WindowOptions::inactive_frame_interval` defaults to 33.3 ms (and `low_power_frame_interval` too, in Low Power Mode; `gpui-pre window.rs:1989-2062`, `platform.rs:2727-2737`). The earlier note blamed "display pacing" for the 33 ms gaps; it was this cap, and it beats against the video's 30 Hz timer (33.33 ms between pushes against a 33.33 ms minimum between frames), so a push can wait a whole extra interval for its frame. Automated runs set both to `None`; interactive windows keep the defaults.
+- **A window the platform calls `Hidden` gets no frames at all** (covered by other windows, minimized, another Space, display asleep: `window.visibility()`, `NSWindow.occlusionState`). The scroll bench used to ask for each next frame from inside the previous one, so one hidden window meant a frame that never came and a process idle at 0% CPU forever (found by the verifier; reproduced here with `--paced --minimize`, which now ends with `BENCH scroll error=no result after 34 s (window visibility Hidden)`). The scroll bench now draws its own frames, and the video bench draws while hidden.
+- **Gaps measured between paints include the frames' own jitter.** On a 60 Hz display (this Mac's) a display-paced frame starts every 16.67 ms, but a frame that costs 7 ms followed by one that costs 10 ms paints 3 ms further apart than a vsync without dropping anything. Paced paint gaps came out at p50 16.7, p95 19.3 ms. The BENCH line therefore uses the gaps between frame starts (p95 16.74 to 16.78 paced).
+
+A frame drawn by the benchmark is `Window::draw`: render, layout, prepaint, paint, image uploads to the atlas. It is not presented: while a display link is attached only its own tick can hand out a drawable (`metal_renderer.rs:528-535`), and the GPU command encoding for the scene is not in the number. The paced mode and the interactive app do include it.
 
 The dev profile is optimized (`[profile.dev]` opt-level 1, dependencies 3; still no `--release`): unoptimized GPUI text shaping made the numbers meaningless.
 
 ## Results
 
-Last run on this Mac (Apple Silicon, macOS, optimized dev profile, background mode):
+Last run on this Mac (Apple Silicon, 60 Hz display, macOS, optimized dev profile, background mode, on battery):
 
 ```
 BENCH idle renders=0 seconds=8
-BENCH scroll frames=241 p50_ms=33.37 p95_ms=36.41 max_ms=43.82
-frame CPU cost (render to paint): p50=7.85 ms p95=11.67 ms max=14.95 ms   (stderr)
+BENCH scroll frames=480 p50_ms=6.31 p95_ms=8.31 max_ms=10.96      # five runs: p95 8.3 to 8.6 (one run, 10.6, with another build running)
+frame CPU cost (render to paint): p50=5.81 ms p95=7.80 ms max=10.48 ms   (stderr)
+BENCH scroll frames=480 p50_ms=6.47 p95_ms=8.42 max_ms=11.13      # same with --minimize (window Hidden)
+BENCH scroll frames=480 p50_ms=16.66 p95_ms=16.74 max_ms=32.57    # --paced: the display's cadence; paint gaps p95 19.3 (stderr)
+BENCH scroll error=no result after 34 s (window visibility Hidden): the platform delivered no frames   # --paced --minimize
 ```
 
 ```
@@ -80,13 +93,15 @@ BENCH idle renders=0 seconds=8            # tray item and Dock badge code active
 BENCH video frames=210 fps=30.0 p95_ms=2.31
 BENCH video frames=210 fps=30.1 p95_ms=2.53
 BENCH video frames=870 fps=30.0 p95_ms=2.36   # 30 s; resident memory 132 MB at the end, 149 MB after 3 s: no growth
+BENCH video frames=210 fps=30.1 p95_ms=2.16   # window Visible, five runs 30.0 to 30.1
+BENCH video frames=210 fps=30.1 p95_ms=2.10   # --minimize: Hidden at the end, 970 to 1020 frames drawn by the bench itself
 ```
 
-The video's stderr detail: render-to-paint average 1.8 ms, gaps between painted frames p50 33.3 ms / p95 35 ms, background generation of a frame about 1 to 2 ms, no frame made and not painted. `idle renders` counts renders of any view plus the tile timers' ticks, so a hidden scene that kept animating would show up. Two earlier video runs, made while another project was building on the same Mac, gave 74 frames (10.6 fps, 120 frames never painted) and 0 frames: GPUI paints nothing for a window the platform reports `Hidden`, and a loaded machine starves the 30 Hz background pacing; the bench prints the window's visibility to make that visible.
+The video's stderr detail: render-to-paint average 1.5 to 1.8 ms, gaps between painted frames p50 33.3 ms / p95 35 ms (38 ms when the bench draws them itself), background generation of a frame about 1 to 2 ms, no frame made and not painted. `idle renders` counts renders of any view plus the tile timers' ticks, so a hidden scene that kept animating would show up. Earlier video runs gave 74 frames (10.6 fps, 120 frames never painted), 0 frames and 26.4 fps (that run ended `Hidden`): a window the platform reports `Hidden` is not painted, and the inactive-window cap can delay a frame. Both are handled (see Background mode); the bench still prints the window's visibility.
 
-The scroll bench jumps about 20 rows per frame (10,400 rows in 8 s), so nearly every frame lays out a whole new screen from cold; 8 ms p50 and 15 ms max for that is the worst case, not a typical wheel scroll.
+The scroll bench lays out 21 new rows per frame, so every frame lays out a whole new screen from cold; 6 ms p50 and 11 ms max for that is the worst case, not a typical wheel scroll. Per-frame cost p95 (8 ms) is half a 60 Hz frame, so there is no off-screen re-layout or text-layout caching to win here: the cost is shaping the rows that are new on screen, which no cache can precompute for rows never seen.
 
-`cargo test`: 81 tests (part 1's 56, plus 25: media 9 (bubble sizes, BGRA conversion, generated formats read back, video frames, Lottie renders 60 distinct frames, video statistics, rate meter), platform 8 (tray actions and menu, tooltip, icon rasterization, menu structure, notification errors), accessibility labels 2, and 6 GPUI view tests: no timer survives hiding the Media scene, the video pushes and releases images, Edit menu actions in the message list and in the composer, the Platform scene counts the badge and renders). Part 1's: selection model 15, markup 6, data 6, copy format 5, bench plumbing 4, selectable segments 4, time 2, ui 2, assets 1, palette 1, and 10 GPUI tests that build the real views headless: row virtualization, jumping, sending, selection by simulated mouse events including double/triple/shift click and edge auto-scroll, clipboard format through the real action, Enter vs Shift+Enter in the composer, and "idle never re-renders").
+`cargo test`: 82 tests (part 1's 57, plus 25: media 9 (bubble sizes, BGRA conversion, generated formats read back, video frames, Lottie renders 60 distinct frames, video statistics, rate meter), platform 8 (tray actions and menu, tooltip, icon rasterization, menu structure, notification errors), accessibility labels 2, and 6 GPUI view tests: no timer survives hiding the Media scene, the video pushes and releases images, Edit menu actions in the message list and in the composer, the Platform scene counts the badge and renders). Part 1's: selection model 15, markup 6, data 6, copy format 5, bench plumbing 4 (flags, percentiles, line shapes, the frame-counted scroll run), selectable segments 4, time 2, ui 2, assets 1, palette 1, and 11 GPUI tests that build the real views headless: the scroll benchmark finishing with no platform frames, row virtualization, jumping, sending, selection by simulated mouse events including double/triple/shift click and edge auto-scroll, clipboard format through the real action, Enter vs Shift+Enter in the composer, and "idle never re-renders").
 
 ## Findings
 
@@ -108,7 +123,7 @@ Limitations and bugs, with evidence (registry paths under `gpui-pre-0.3.14/src`,
 6. **An absolutely positioned child needs `inset_0()`**, not `size_full()`: without offsets it is placed after its siblings (the pointer canvas sat below the list until a headless test caught it).
 7. **Bidi**: right-to-left lines (Arabic, Hebrew) shape in the right order but stay left-aligned in the bubble; GPUI has no paragraph direction. Selection of RTL text is by logical offsets, so a drag over mixed text selects logical, not visual, ranges.
 8. **Window activation redraws every view** (`window.refresh()` on focus changes), including cached ones, which is why the idle bench discounts renders near an activation event.
-9. **Unfocused windows get 30 Hz frames** (observed, not from the source): benchmark numbers from background mode are paced by the display, not by GPUI.
+9. **Unfocused windows get 30 Hz frames, by default, from GPUI itself**: `WindowOptions::inactive_frame_interval` (33.3 ms) and `low_power_frame_interval`; set them to `None` where that matters (see Background mode). A window the platform reports `Hidden` gets none.
 10. **Metal**: `gpui-pre-apple/build.rs:128-215` shells out to `xcrun metal`; without the toolchain only `runtime_shaders` builds (shaders compile at launch).
 11. gpui-component's `Root` is required as the window root; its icons and assets are not used (the spike ships its own `AssetSource`).
 

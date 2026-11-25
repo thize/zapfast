@@ -80,7 +80,7 @@ impl Shell {
         let bench = cli
             .bench
             .filter(|(kind, _)| *kind == crate::bench::BenchKind::Scroll)
-            .map(|(_, seconds)| ScrollBench::new(seconds));
+            .map(|(_, seconds)| ScrollBench::new(seconds, cli.paced));
         let convo = data::default_conversation();
         let chat_stats = stats.clone();
         let chat = cx.new(|cx| ChatScene::new(convo, chat_stats, bench, window, cx));
@@ -114,6 +114,15 @@ impl Shell {
         // animating for it (the platform reports it through this callback).
         let visibility = cx.observe_window_visibility(window, |this, visibility, _, cx| {
             this.window_visible = visibility.is_visible();
+            if std::env::var_os("ZAPFAST_SPIKE_TRACE").is_some() {
+                eprintln!(
+                    "TRACE visibility {:?} at {:?}",
+                    visibility,
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                );
+            }
             this.sync_media(cx);
         });
         let mut shell = Self {

@@ -50,7 +50,7 @@ fn main() {
         Err(message) => {
             eprintln!("{message}");
             eprintln!(
-                "usage: gpui-chat-spike [--scene chat|media|platform] [--bench idle|scroll|video] [--seconds N] [--snapshot DIR] [--jump MESSAGE] [--appearance light|dark] [--probe notify-gpui|notify-fastframe|badge] [--a11y-dump FILE]"
+                "usage: gpui-chat-spike [--scene chat|media|platform] [--bench idle|scroll|video] [--seconds N] [--snapshot DIR] [--paced] [--minimize] [--jump MESSAGE] [--appearance light|dark] [--probe notify-gpui|notify-fastframe|badge] [--a11y-dump FILE]"
             );
             std::process::exit(2);
         }

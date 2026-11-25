@@ -111,6 +111,21 @@ fn boot(cli: Cli, cx: &mut App) {
                     ..Default::default()
                 }),
                 focus: !background,
+                // GPUI paints an unfocused window, or any window in Low Power
+                // Mode, at most every 33 ms by default. A background run is
+                // always unfocused and measures the app's own frame cost, so
+                // those two OS-friendly caps are lifted for it (interactive
+                // runs keep them).
+                inactive_frame_interval: if background {
+                    None
+                } else {
+                    WindowOptions::default().inactive_frame_interval
+                },
+                low_power_frame_interval: if background {
+                    None
+                } else {
+                    WindowOptions::default().low_power_frame_interval
+                },
                 ..Default::default()
             },
             |window, cx| {
@@ -122,10 +137,18 @@ fn boot(cli: Cli, cx: &mut App) {
     if !background {
         cx.activate(true);
     }
+    if cli.minimize {
+        window
+            .update(cx, |_, window, _| window.minimize_window())
+            .ok();
+    }
 
     match (&cli.bench, &cli.snapshot) {
         (Some((BenchKind::Idle, seconds)), _) => idle_bench(window, *seconds, started, cx),
         (Some((BenchKind::Video, seconds)), _) => video_bench(window, *seconds, started, cx),
+        (Some((BenchKind::Scroll, seconds)), _) => {
+            scroll_bench(window, *seconds, cli.paced, started, cx)
+        }
         (_, Some(dir)) => snapshot(window, dir.clone(), cx),
         _ if cli.probe_badge => badge_probe(window, cx),
         _ if cli.probe_notify.is_some() => {
@@ -133,6 +156,104 @@ fn boot(cli: Cli, cx: &mut App) {
         }
         _ => {}
     }
+}
+
+/// Gives up on a benchmark that has produced nothing, so a run never hangs:
+/// prints the failure on stdout (where the BENCH lines are) and exits 1.
+fn bench_deadline(
+    window: WindowHandle<gpui_component::Root>,
+    name: &'static str,
+    limit: Duration,
+    started: Instant,
+    cx: &mut App,
+) {
+    cx.spawn(async move |cx| {
+        cx.background_executor()
+            .timer((started + limit).saturating_duration_since(Instant::now()))
+            .await;
+        let visibility = cx.update(|cx| {
+            window
+                .update(cx, |_, window, _| format!("{:?}", window.visibility()))
+                .unwrap_or_default()
+        });
+        println!(
+            "BENCH {name} error=no result after {} s (window visibility {visibility}): the platform delivered no frames",
+            limit.as_secs()
+        );
+        std::process::exit(1);
+    })
+    .detach();
+}
+
+/// Scrolls the conversation for `seconds * 60` frames, drawing each frame
+/// itself, back to back, instead of waiting for the display link: a window
+/// that is hidden, unfocused or throttled by the OS gets no frames (or a frame
+/// every 33 ms), and a benchmark that waited for them measured the OS or hung.
+/// A frame here is the whole of GPUI's work for it (render, layout, prepaint,
+/// paint, atlas uploads) without presenting it to the GPU, which only the
+/// display link's own tick can do (`--paced` runs that way instead).
+fn scroll_bench(
+    window: WindowHandle<gpui_component::Root>,
+    seconds: u64,
+    paced: bool,
+    started: Instant,
+    cx: &mut App,
+) {
+    // A paced run needs frames at the display's rate: allow for a slow start.
+    let limit = Duration::from_secs(10 + seconds * if paced { 3 } else { 4 });
+    bench_deadline(window, "scroll", limit, started, cx);
+    if paced {
+        return;
+    }
+    let shell = shell_of(window, cx);
+    let conversation = shell.read(cx).chat().read(cx).conversation().clone();
+    cx.spawn(async move |cx| {
+        loop {
+            let alive = cx.update(|cx| {
+                conversation.update(cx, |_, cx| cx.notify());
+                cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+                    .is_ok()
+            });
+            if !alive {
+                break;
+            }
+            // Lets the run loop deliver events and the clock tick in between.
+            cx.background_executor().timer(Duration::ZERO).await;
+        }
+    })
+    .detach();
+}
+
+/// Draws frames for a hidden window, which the platform gives none: the
+/// video's pictures are still pushed, uploaded and painted, as they would be
+/// the moment the window is shown, and the run measures that instead of
+/// reporting 0 fps because a window was covered.
+fn draw_while_hidden(
+    window: WindowHandle<gpui_component::Root>,
+    stats: std::rc::Rc<crate::bench::Stats>,
+    cx: &mut App,
+) {
+    cx.spawn(async move |cx| {
+        loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(4))
+                .await;
+            let drew = cx.update(|cx| {
+                cx.update_window(window.into(), |_, window, cx| {
+                    if window.is_visible() {
+                        return false;
+                    }
+                    window.draw(cx).clear(cx);
+                    true
+                })
+                .unwrap_or(false)
+            });
+            if drew {
+                stats.pumped();
+            }
+        }
+    })
+    .detach();
 }
 
 /// Runs the Media scene's call video alone for `seconds`, then prints how many
@@ -145,6 +266,8 @@ fn video_bench(
 ) {
     let shell = shell_of(window, cx);
     let stats = shell.read(cx).media().read(cx).video_stats();
+    let scene_stats = shell.read(cx).stats();
+    draw_while_hidden(window, scene_stats.clone(), cx);
     cx.spawn(async move |cx| {
         let end = started + Duration::from_secs(seconds);
         cx.background_executor()
@@ -164,6 +287,10 @@ fn video_bench(
                 .unwrap_or_default()
         });
         eprintln!("window visibility at the end: {visibility}");
+        eprintln!(
+            "frames the bench drew itself because the window was hidden: {}",
+            scene_stats.pumped_frames()
+        );
         cx.update(|cx| cx.quit());
     })
     .detach();
