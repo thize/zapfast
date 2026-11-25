@@ -46,11 +46,13 @@ unicode-segmentation = "1"
 # through zapfast's modules, which carry ZapFast's names.
 fastframe-instance = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1" }
 fastframe-autostart = { git = "https://github.com/crmne/fastframe", tag = "v0.17.1" }
-directories = "6"
+anyhow = "1"
 
 [dev-dependencies]
 gpui = { package = "gpui-pre", version = "=0.3.14", features = ["test-support"] }
 tempfile = "3"
+# The in-memory credential store the isolation tests use, as the root's tests do.
+keyring-core = "1"
 
 # The root's profiles, so a release build of this app is built as ZapFast is.
 [profile.release]

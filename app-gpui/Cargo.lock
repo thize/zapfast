@@ -11626,13 +11626,14 @@ dependencies = [
 name = "zapfast-gpui"
 version = "0.0.0"
 dependencies = [
- "directories",
+ "anyhow",
  "fastframe-autostart",
  "fastframe-instance",
  "futures",
  "gpui-component",
  "gpui-pre",
  "gpui-pre-platform",
+ "keyring-core",
  "log",
  "qrcode",
  "tempfile",
