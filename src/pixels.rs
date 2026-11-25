@@ -151,7 +151,9 @@ impl PixelImage {
             rgba.len()
         );
         let pixels = rgba
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|p| Pixel::from_rgba_unmultiplied(p[0], p[1], p[2], p[3]))
             .collect();
         Self::new(size, pixels)
@@ -167,7 +169,9 @@ impl PixelImage {
             rgba.len()
         );
         let pixels = rgba
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|p| Pixel::from_rgba_premultiplied(p[0], p[1], p[2], p[3]))
             .collect();
         Self::new(size, pixels)
