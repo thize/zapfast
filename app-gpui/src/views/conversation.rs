@@ -741,6 +741,9 @@ impl ConversationView {
             return;
         };
         let id = view.id().to_owned();
+        if media.path.is_some() && self.media.toggle_clip(&id, cx) {
+            return;
+        }
         if media.path.is_some() {
             cx.emit(ConversationViewEvent::OpenMedia {
                 chat: self.chat.clone(),
@@ -2048,6 +2051,47 @@ mod tests {
             .view
             .read_with(cx, |view, _| view.message(missing).id().to_owned());
         assert_eq!(*opened.borrow(), vec![id], "the second click opens it");
+    }
+
+    #[gpui::test]
+    fn a_gif_plays_while_shown_and_a_video_waits_for_a_click(cx: &mut TestAppContext) {
+        let (open, cx) = open(cx, ANA);
+        settle(cx);
+        settle(cx);
+        // (message index, gif) of the clips whose file is there and row shown.
+        let clips: Vec<(usize, bool)> = open.view.read_with(cx, |view, _| {
+            (0..view.message_count())
+                .filter_map(|i| {
+                    let m = &view.message(i).message;
+                    match m.content {
+                        zapfast::model::Content::Video { gif, .. }
+                            if view.media.is_shown(&m.id) && view.media.clip(&m.id).is_some() =>
+                        {
+                            Some((i, gif))
+                        }
+                        _ => None,
+                    }
+                })
+                .collect()
+        });
+        let playing = |cx: &mut VisualTestContext, i: usize| {
+            open.view.read_with(cx, |view, cx| {
+                let id = view.message(i).id();
+                view.media.clip(id).unwrap().read(cx).is_playing()
+            })
+        };
+        assert!(clips.iter().any(|&(_, gif)| gif), "a GIF is on screen");
+        assert!(clips.iter().any(|&(_, gif)| !gif), "a video is on screen");
+        for &(i, gif) in &clips {
+            assert_eq!(playing(cx, i), gif, "message {i}: only the GIF autoplays");
+        }
+        let video = clips.iter().find(|(_, gif)| !gif).unwrap().0;
+        open.view
+            .update(cx, |view, cx| view.media_clicked(video, cx));
+        assert!(playing(cx, video), "a click plays the video");
+        open.view
+            .update(cx, |view, cx| view.media_clicked(video, cx));
+        assert!(!playing(cx, video), "and the next one pauses it");
     }
 
     #[gpui::test]

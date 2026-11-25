@@ -8,6 +8,7 @@
 //! `cached`, and plays only while its row is on screen, so a list at rest
 //! asks for no frame.
 
+use super::clip::Clip;
 use super::conversation::ConversationView;
 use super::msgview::MsgView;
 use crate::palette::Palette;
@@ -15,8 +16,8 @@ use crate::ui::icon;
 use gpui::{
     AnyElement, AppContext as _, Bounds, Context, CursorStyle, Entity, InteractiveElement as _,
     IntoElement, ParentElement as _, Pixels, RenderImage, Role, SharedString,
-    StatefulInteractiveElement as _, Styled as _, canvas, div, hsla, prelude::FluentBuilder as _,
-    px,
+    StatefulInteractiveElement as _, Styled as _, Subscription, canvas, div, hsla,
+    prelude::FluentBuilder as _, px,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -131,6 +132,9 @@ pub struct BubbleMedia {
     previews: HashMap<String, Option<Arc<RenderImage>>>,
     animated: HashMap<String, Entity<AnimatedPicture>>,
     lottie: HashMap<String, Entity<LottiePlayer>>,
+    clips: HashMap<String, Entity<Clip>>,
+    /// Why the view draws again when a clip starts, stops or gets its poster.
+    watching: HashMap<String, Subscription>,
     /// Messages whose row is on screen.
     shown: HashSet<String>,
 }
@@ -143,6 +147,9 @@ impl BubbleMedia {
             return;
         }
         for id in self.shown.difference(&shown) {
+            if let Some(clip) = self.clips.get(id) {
+                clip.update(cx, |clip, cx| clip.pause(cx));
+            }
             if let Some(picture) = self.animated.get(id) {
                 picture.update(cx, |p, cx| p.set_playing(false, cx));
             }
@@ -151,6 +158,13 @@ impl BubbleMedia {
             }
         }
         for id in shown.difference(&self.shown) {
+            // A GIF plays by itself while it is on screen; a video waits for
+            // a click.
+            if let Some(clip) = self.clips.get(id)
+                && clip.read(cx).is_looped()
+            {
+                clip.update(cx, |clip, cx| clip.play(cx));
+            }
             if let Some(picture) = self.animated.get(id) {
                 picture.update(cx, |p, cx| p.set_playing(true, cx));
             }
@@ -159,6 +173,23 @@ impl BubbleMedia {
             }
         }
         self.shown = shown;
+    }
+
+    /// The clip of the video of message `id`, once its file is there.
+    pub fn clip(&self, id: &str) -> Option<&Entity<Clip>> {
+        self.clips.get(id)
+    }
+
+    /// Plays or pauses the video of message `id`. False when it has no clip
+    /// to toggle (a picture, a GIF that plays by itself, a file not there).
+    pub fn toggle_clip(&mut self, id: &str, cx: &mut gpui::App) -> bool {
+        match self.clips.get(id) {
+            Some(clip) if !clip.read(cx).is_looped() => {
+                clip.update(cx, |clip, cx| clip.toggle(cx));
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Whether the row of message `id` is on screen.
@@ -178,6 +209,8 @@ impl BubbleMedia {
         self.previews.retain(|id, _| keep(id));
         self.animated.retain(|id, _| keep(id));
         self.lottie.retain(|id, _| keep(id));
+        self.clips.retain(|id, _| keep(id));
+        self.watching.retain(|id, _| keep(id));
         self.shown.retain(|id| keep(id));
     }
 
@@ -239,12 +272,42 @@ impl BubbleMedia {
                 });
                 cached(picture, (w, h)).into_any_element()
             }
-            // Video files are not pictures: the poster stands in for them.
-            (Kind::Video { .. }, _) => still(index, preview, None, w, h, radius, backdrop, &label),
+            // A video file: the clip draws its own first frame over the small
+            // preview that came with the message, and plays when asked.
+            (Kind::Video { gif, .. }, Some(path)) => {
+                let clip = self
+                    .clips
+                    .entry(id.clone())
+                    .or_insert_with(|| {
+                        cx.new(|cx| Clip::new(path.to_path_buf(), (w, h), radius, gif, cx))
+                    })
+                    .clone();
+                self.watching
+                    .entry(id.clone())
+                    .or_insert_with(|| cx.observe(&clip, |_, _, cx| cx.notify()));
+                if gif && !clip.read(cx).is_playing() && self.shown.contains(&id) {
+                    clip.update(cx, |clip, cx| clip.play(cx));
+                }
+                let under = still(index, preview, None, w, h, radius, backdrop, &label);
+                div()
+                    .relative()
+                    .w(px(w))
+                    .h(px(h))
+                    .child(under)
+                    .child(div().absolute().inset_0().child(cached(&clip, (w, h))))
+                    .into_any_element()
+            }
+            (Kind::Video { .. }, None) => {
+                still(index, preview, None, w, h, radius, backdrop, &label)
+            }
             (_, file) => still(index, preview, file, w, h, radius, backdrop, &label),
         };
 
-        let badge = overlay(kind, media, progress);
+        let playing = self
+            .clips
+            .get(&id)
+            .is_some_and(|clip| clip.read(cx).is_playing());
+        let badge = overlay(kind, media, progress, playing);
         let clickable = !sticker || media.path.is_none();
         Some(
             div()
@@ -319,7 +382,7 @@ fn still(
 
 /// What sits over the picture: a play button on a clip, a ring while it
 /// downloads, a way to ask for it when it is not there.
-fn overlay(kind: Kind, media: &Media, progress: Option<u8>) -> Option<AnyElement> {
+fn overlay(kind: Kind, media: &Media, progress: Option<u8>, playing: bool) -> Option<AnyElement> {
     let dim = hsla(0., 0., 0., 0.45);
     let circle = |child: AnyElement| {
         div()
@@ -370,6 +433,7 @@ fn overlay(kind: Kind, media: &Media, progress: Option<u8>) -> Option<AnyElement
             icon("icons/download.svg", 22., white).into_any_element(),
         )),
         (MediaState::Idle, _) => match kind {
+            Kind::Video { gif: false, .. } if playing => None,
             Kind::Video { gif: false, .. } => Some(
                 div()
                     .absolute()

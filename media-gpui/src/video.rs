@@ -63,6 +63,8 @@ pub struct VideoSurface {
     sequence: u64,
     recorded: Rc<Cell<u64>>,
     fit: VideoFit,
+    /// Corner radius of the surface and its picture, in logical pixels.
+    radius: f32,
     feed: Option<Task<()>>,
     stats: Option<Rc<VideoStats>>,
     /// Frames that arrived while a newer one was already waiting.
@@ -82,6 +84,7 @@ impl VideoSurface {
             sequence: 0,
             recorded: Rc::default(),
             fit: VideoFit::Contain,
+            radius: 0.0,
             feed: None,
             stats: None,
             coalesced: 0,
@@ -91,6 +94,12 @@ impl VideoSurface {
     /// Cover-crop instead of letterboxing (a round video message).
     pub fn fit(mut self, fit: VideoFit) -> Self {
         self.fit = fit;
+        self
+    }
+
+    /// Rounds the corners (a round video message takes half its side).
+    pub fn radius(mut self, radius: f32) -> Self {
+        self.radius = radius;
         self
     }
 
@@ -178,16 +187,23 @@ impl Render for VideoSurface {
         let recorded = self.recorded.clone();
         let sequence = self.sequence;
         let fit = self.fit;
+        let radius = px(self.radius);
         div()
             .relative()
             .size_full()
             .overflow_hidden()
+            .rounded(radius)
             .bg(gpui::black())
             .when_some(self.image.clone(), |surface, image| {
-                surface.child(img(image).size_full().object_fit(match fit {
-                    VideoFit::Contain => ObjectFit::Contain,
-                    VideoFit::Cover => ObjectFit::Cover,
-                }))
+                surface.child(
+                    img(image)
+                        .size_full()
+                        .rounded(radius)
+                        .object_fit(match fit {
+                            VideoFit::Contain => ObjectFit::Contain,
+                            VideoFit::Cover => ObjectFit::Cover,
+                        }),
+                )
             })
             // Painted after the picture: the time from this render to the end
             // of its own paint is the frame's cost (render, layout, the atlas

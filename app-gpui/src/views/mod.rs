@@ -6,6 +6,7 @@
 
 pub mod avatar;
 pub mod chat_list;
+pub mod clip;
 pub mod composer;
 pub mod conversation;
 pub mod copy;
