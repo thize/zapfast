@@ -1,6 +1,6 @@
 //! SQLCipher archive storage and automatic OS-keyring unlock.
 
-use std::{fs, io::Read, path::Path};
+use std::{fs, io::Read, path::Path, sync::OnceLock};
 
 use anyhow::{Context, Result, ensure};
 use keyring_core::api::CredentialStoreApi;
@@ -9,6 +9,46 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 const HEADER: &[u8; 16] = b"SQLite format 3\0";
+
+/// The keyring service ZapFast files its archive keys under. Existing keys
+/// live there, so this never changes.
+pub const DEFAULT_KEYRING_SERVICE: &str = "rocks.zapfast.ZapFast";
+
+static KEYRING_SERVICE: OnceLock<String> = OnceLock::new();
+
+/// The keyring service this process files archive keys under.
+pub fn keyring_service() -> &'static str {
+    service_in(&KEYRING_SERVICE)
+}
+
+/// Files this process's archive keys under `service` instead of ZapFast's.
+///
+/// Another program built on this crate, one that runs beside an installed
+/// ZapFast, calls it once at start, before any archive opens: it keeps the two
+/// programs' keys apart in the keyring, whatever their folders are called.
+/// Naming the service ZapFast already uses is allowed, so the default is not
+/// special; naming a different one after a key was read or after another call
+/// chose, is an error.
+pub fn set_keyring_service(service: &str) -> Result<()> {
+    choose_service(&KEYRING_SERVICE, service)
+}
+
+fn service_in(cell: &OnceLock<String>) -> &str {
+    cell.get_or_init(|| DEFAULT_KEYRING_SERVICE.to_owned())
+}
+
+fn choose_service(cell: &OnceLock<String>, service: &str) -> Result<()> {
+    ensure!(
+        !service.trim().is_empty() && !service.chars().any(char::is_control),
+        "The keyring service name is empty or has control characters"
+    );
+    let chosen = cell.get_or_init(|| service.to_owned());
+    ensure!(
+        chosen == service,
+        "The keyring service is already {chosen:?}, so it cannot become {service:?}"
+    );
+    Ok(())
+}
 
 fn plaintext(path: &Path) -> Result<bool> {
     let mut file = match fs::File::open(path) {
@@ -29,7 +69,7 @@ pub(super) fn key_for(path: &Path) -> Result<Zeroizing<[u8; 32]>> {
     fs::create_dir_all(parent)?;
     let store = platform_store()?;
     let entry = store
-        .build("rocks.zapfast.ZapFast", &identity_for(parent)?, None)
+        .build(keyring_service(), &identity_for(parent)?, None)
         .map_err(keyring_error)
         .context("The OS keyring could not open ZapFast's archive key")?;
     key_from_entry(path, &entry)
@@ -62,7 +102,7 @@ fn copy_archive_key_in(
         return Ok(());
     }
     let old_entry = store
-        .build("rocks.zapfast.ZapFast", &identity_for(old_parent)?, None)
+        .build(keyring_service(), &identity_for(old_parent)?, None)
         .map_err(keyring_error)
         .context("The OS keyring could not open ZapFast's archive key")?;
     let key = match old_entry.get_secret() {
@@ -87,7 +127,7 @@ fn copy_archive_key_in(
         }
     };
     let new_entry = store
-        .build("rocks.zapfast.ZapFast", &identity_for(new_parent)?, None)
+        .build(keyring_service(), &identity_for(new_parent)?, None)
         .map_err(keyring_error)
         .context("The OS keyring could not open ZapFast's archive key")?;
     new_entry
@@ -112,7 +152,7 @@ fn copy_archive_key_in(
 /// such as a removed account's. Never call it while the archive exists.
 pub fn forget_archive_key(identity: &str) -> Result<()> {
     let entry = platform_store()?
-        .build("rocks.zapfast.ZapFast", identity, None)
+        .build(keyring_service(), identity, None)
         .map_err(keyring_error)?;
     match entry.delete_credential() {
         Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
@@ -360,6 +400,58 @@ mod tests {
         connection
             .query_row("SELECT value FROM secrets", [], |row| row.get(0))
             .unwrap()
+    }
+
+    /// Existing installations keep their archive keys under this service.
+    #[test]
+    fn the_default_keyring_service_is_the_one_zapfast_always_used() {
+        assert_eq!(DEFAULT_KEYRING_SERVICE, "rocks.zapfast.ZapFast");
+        assert_eq!(service_in(&OnceLock::new()), "rocks.zapfast.ZapFast");
+    }
+
+    /// A program beside ZapFast files its keys under a service of its own, and
+    /// cannot change its mind afterwards or after a key was read.
+    #[test]
+    fn another_program_chooses_its_keyring_service_once() {
+        let cell = OnceLock::new();
+        choose_service(&cell, "rocks.example.Other").unwrap();
+        assert_eq!(service_in(&cell), "rocks.example.Other");
+        choose_service(&cell, "rocks.example.Other").unwrap();
+        assert!(choose_service(&cell, "rocks.zapfast.ZapFast").is_err());
+        assert_eq!(service_in(&cell), "rocks.example.Other");
+
+        // A key read under the default settles the service: too late to change.
+        let read_first = OnceLock::new();
+        assert_eq!(service_in(&read_first), "rocks.zapfast.ZapFast");
+        assert!(choose_service(&read_first, "rocks.example.Other").is_err());
+        choose_service(&read_first, "rocks.zapfast.ZapFast").unwrap();
+    }
+
+    #[test]
+    fn a_keyring_service_name_must_be_a_real_name() {
+        for bad in ["", "  ", "line\nbreak", "nul\0"] {
+            assert!(choose_service(&OnceLock::new(), bad).is_err(), "{bad:?}");
+        }
+    }
+
+    /// The same archive folder under two services is two entries: one
+    /// program's key is neither read nor overwritten by the other's.
+    #[test]
+    fn two_services_keep_the_same_folders_keys_apart() {
+        let store = keyring_core::mock::Store::new().unwrap();
+        let identity = "archive-0123";
+        let zapfast = store
+            .build(DEFAULT_KEYRING_SERVICE, identity, None)
+            .unwrap();
+        let other = store.build("rocks.example.Other", identity, None).unwrap();
+        zapfast.set_secret(&[1; 32]).unwrap();
+        assert!(matches!(
+            other.get_secret(),
+            Err(keyring_core::Error::NoEntry)
+        ));
+        other.set_secret(&[2; 32]).unwrap();
+        assert_eq!(zapfast.get_secret().unwrap(), vec![1; 32]);
+        assert_eq!(other.get_secret().unwrap(), vec![2; 32]);
     }
 
     #[test]

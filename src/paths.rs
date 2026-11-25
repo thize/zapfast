@@ -34,8 +34,10 @@ impl AppDirs {
         }
     }
 
-    /// Standard platform directories for the app.
-    fn of(name: &str) -> Option<Self> {
+    /// Standard platform directories for the app called `name`. A program
+    /// built on this crate that runs beside ZapFast asks for its own name, and
+    /// shares no folder with it.
+    pub fn of(name: &str) -> Option<Self> {
         let project = ProjectDirs::from("me", "paolino", name)?;
         let state = project
             .state_dir()
@@ -487,6 +489,26 @@ mod tests {
             );
         }
         assert!(storage_dir("zapfast").is_some());
+    }
+
+    /// Another app's name gives it folders ZapFast's never overlap.
+    #[test]
+    fn apps_with_different_names_share_no_folder() {
+        let (zapfast, other) = (AppDirs::of("zapfast"), AppDirs::of("zapfast-gpui"));
+        let (Some(zapfast), Some(other)) = (zapfast, other) else {
+            return; // No home directory in this environment.
+        };
+        let all = |dirs: &AppDirs| {
+            [&dirs.config, &dirs.state, &dirs.cache, &dirs.runtime].map(Clone::clone)
+        };
+        for ours in all(&other) {
+            for theirs in all(&zapfast) {
+                assert!(
+                    !ours.starts_with(&theirs) && !theirs.starts_with(&ours),
+                    "{ours:?} overlaps {theirs:?}"
+                );
+            }
+        }
     }
 
     fn root(name: &str) -> PathBuf {
