@@ -33,9 +33,18 @@ macro_rules! secondary {
 }
 
 pub fn run(cli: Cli) {
-    gpui_platform::application()
-        .with_assets(Assets)
-        .run(move |cx: &mut App| boot(cli, cx));
+    let app = gpui_platform::application().with_assets(Assets);
+    // Automated runs must be an Accessory app before the run loop starts:
+    // switching the policy inside `boot`, after launch, still lets macOS hand
+    // the window focus. The badge probe keeps its Dock tile.
+    let accessory = (cli.bench.is_some() || cli.snapshot.is_some() || cli.probe_notify.is_some())
+        && !cli.probe_badge;
+    let app = if accessory && cfg!(target_os = "macos") {
+        app.with_windowing(gpui::WindowingRequest::Headless)
+    } else {
+        app
+    };
+    app.run(move |cx: &mut App| boot(cli, cx));
 }
 
 fn boot(cli: Cli, cx: &mut App) {
