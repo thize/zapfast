@@ -90,7 +90,7 @@ pub enum Notice {
 }
 
 /// What the decoder thread hands to the interface thread.
-enum Delivery {
+pub enum Delivery {
     /// The movie's length, sent before any frame.
     Length(Duration),
     Frame(Duration, PixelImage),
@@ -1071,6 +1071,20 @@ impl Player {
         ctx.request_repaint_after(next.clamp(Duration::from_millis(4), TICK));
         None
     }
+}
+
+/// Starts decoding `path` from `from` on its own thread, for an interface that
+/// draws and paces the frames itself (the GPUI app's bubbles). The frames come
+/// with the time they show at, at most `side` pixels on their longest side;
+/// `waker` is called after each one. Dropping the receiver stops the thread at
+/// its next frame.
+pub fn decode_in_background(
+    path: &Path,
+    from: Duration,
+    side: u32,
+    waker: Waker,
+) -> Receiver<Delivery> {
+    spawn_decoder(path, from, side, waker)
 }
 
 /// Starts decoding `path` from `from` on its own thread. Dropping the
@@ -2154,5 +2168,33 @@ mod tests {
             (missing - 1.0).abs() < 0.05,
             "a second in left {missing} s less"
         );
+    }
+}
+
+#[cfg(test)]
+mod background_decoder_tests {
+    use super::*;
+
+    #[test]
+    fn the_public_decoder_sends_the_length_then_timed_frames_then_the_end() {
+        let sample = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/video/sample.mp4");
+        let receiver = decode_in_background(&sample, Duration::ZERO, 64, Waker::default());
+        let mut length = None;
+        let mut times = Vec::new();
+        let mut longest = 0;
+        loop {
+            match receiver.recv().expect("the decoder ends with a delivery") {
+                Delivery::Length(found) => length = Some(found),
+                Delivery::Frame(at, image) => {
+                    times.push(at);
+                    longest = longest.max(image.width().max(image.height()));
+                }
+                Delivery::End => break,
+                Delivery::Unsupported(reason) => panic!("sample.mp4 should play: {reason}"),
+            }
+        }
+        assert!(length.is_some_and(|length| length > Duration::ZERO));
+        assert!(times.len() > 1 && times.windows(2).all(|pair| pair[0] <= pair[1]));
+        assert!(longest <= 64, "frames are scaled down to the side asked");
     }
 }
