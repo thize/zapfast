@@ -1,0 +1,6 @@
+# Branches of this fork built into the personal build before they are pull
+# requests upstream, merged after all the pull requests, one per line: the
+# branch name first, then anything as a note.
+
+no-drag-to-select-messages    Select no messages by dragging, as WhatsApp Web (built on #1172)
+continue-every-voice-message  Keep playing the voice messages right after one, heard or not

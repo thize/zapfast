@@ -1,0 +1,45 @@
+diff --git a/src/app.rs b/src/app.rs
+index 5321e70..9b14c66 100644
+--- a/src/app.rs
++++ b/src/app.rs
+@@ -2698,20 +2698,27 @@ impl App {
+             return;
+         }
+         let is_group = chat.is_group();
+-        let limited = self
++        // A reaction waits as a message does: one alert for a burst, and ten
++        // minutes in a chat whose repeat notifications are limited.
++        let quiet = if self
+             .account()
+             .settings
+             .limit_notifications
+-            .applies(is_group);
++            .applies(is_group)
++        {
++            crate::notify::Quiet::Limited
++        } else {
++            crate::notify::Quiet::Burst
++        };
+         let account = self.account().id.clone();
+         if !self
+             .notifications
+-            .allow(&account, chat_id, std::time::Instant::now(), limited)
++            .allow(&account, chat_id, std::time::Instant::now(), quiet)
+         {
+             return;
+         }
+         if self.app_lock.is_locked() || !self.settings.notification_content {
+-            self.notify_without_content(chat_id, is_group, &message.id, limited);
++            self.notify_without_content(chat_id, is_group, &message.id, true);
+             return;
+         }
+         let Some(chat) = self.chat(chat_id) else {
+@@ -2755,7 +2762,7 @@ impl App {
+             },
+             std::sync::Arc::clone(&self.notification_opens),
+             move || waker.wake(),
+-            limited,
++            true,
+         );
+         self.wants_attention = true;
+     }

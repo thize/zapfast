@@ -1,0 +1,26 @@
+# Pull requests by other people built into the personal build while they
+# are open, one per line: the number first, then anything as a note.
+# PRs by the AUTHORS in the workflow come in without being listed here.
+
+812   Read a page's whole head for its link preview
+820   Name saved attachments by kind and send time (#801)
+861   Take back the phone-silence warning once the phone answers
+872   Fit the composer on macOS: no scroll bar when empty, send button in its corner
+889   Notify when someone reacts to one of your messages
+899   Keep a long chat name clear of the header buttons
+916   Keep the message field focused through a click on the chat background
+955   Reply to a message by swiping it on a touchpad
+990   Select attachments when showing them in their folder
+1007  Let the update banner be closed
+1012  Send HEIC photos as photos on macOS
+1038  Show the sender's name in the media viewer header for group chats
+1080  Keep a failed audio message inside its bubble
+1081  Keep the reader's place when older history loads
+1098  Message a typed number from New chat without saving it
+1103  Skip copying an attachment onto itself
+1113  Stop restarting a call speaker that is playing
+1135  Keep group dialogs usable in small windows
+1141  Filter group members by name or number in group info
+1165  Show the profile name of someone history named by a masked number
+1168  Play the sound of audio stickers
+1172  Seek an audio clip by dragging instead of selecting messages

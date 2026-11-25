@@ -1,5 +1,5 @@
 # Builds ZapFast's latest release plus the open pull requests of the
-# authors below, with the same downloads as an upstream release (macOS
+# authors below and of extra-prs.txt, with the same downloads as an upstream release (macOS
 # universal disk image; Windows x64 and arm64 zip and installer; Linux x64
 # and arm64 archive, AppImage, deb and rpm; Flatpak), and publishes it as a
 # signed release of this fork, which the app's own updater offers. It runs
@@ -47,6 +47,11 @@ jobs:
           GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
         run: gh api -X POST "repos/$GITHUB_REPOSITORY/merge-upstream" -f branch=main
 
+      - name: Check out this branch
+        uses: actions/checkout@v4
+        with:
+          path: personal
+
       - name: Decide what to build
         id: plan
         env:
@@ -55,13 +60,39 @@ jobs:
           set -euo pipefail
           upstream_tag=$(gh release view -R "$UPSTREAM" --json tagName -q .tagName)
           : > prs.tsv
+          : > gone.md
           for author in $AUTHORS; do
             gh pr list -R "$UPSTREAM" --state open --author "$author" --limit 100 \
               --json number,headRefOid,title,author \
               --jq '.[] | [.number, .headRefOid, .author.login, .title] | @tsv' >> prs.tsv
           done
-          sort -n -o prs.tsv prs.tsv
-          fingerprint=$( { echo "$upstream_tag"; cut -f1,2 prs.tsv; } | sha256sum | cut -c1-12)
+          # Other people's pull requests, listed by number in extra-prs.txt.
+          for number in $(grep -o '^[0-9]\+' personal/extra-prs.txt); do
+            gh pr view "$number" -R "$UPSTREAM" --json number,headRefOid,title,author,state \
+              --jq '[.number, .headRefOid, .author.login, .title, .state] | @tsv' > pr.tsv
+            if [ "$(cut -f5 pr.tsv)" = OPEN ]; then
+              cut -f1-4 pr.tsv >> prs.tsv
+            else
+              echo "- #$number $(cut -f4 pr.tsv) ($(cut -f5 pr.tsv | tr 'A-Z' 'a-z'))" >> gone.md
+            fi
+          done
+          sort -n -u -o prs.tsv prs.tsv
+          # Branches of this fork to build in before they are pull requests,
+          # listed in extra-branches.txt.
+          : > branches.tsv
+          for branch in $(grep -o '^[^#[:space:]]\+' personal/extra-branches.txt || true); do
+            if sha=$(gh api "repos/$GITHUB_REPOSITORY/branches/$branch" --jq .commit.sha 2>/dev/null); then
+              printf '%s\t%s\n' "$branch" "$sha" >> branches.tsv
+            else
+              echo "- branch $branch (gone)" >> gone.md
+            fi
+          done
+          fingerprint=$( {
+            echo "$upstream_tag"
+            cut -f1,2 prs.tsv
+            cat branches.tsv
+            cat personal/fixups/*.patch 2>/dev/null || true
+          } | sha256sum | cut -c1-12)
           version="${upstream_tag#v}-personal.${GITHUB_RUN_NUMBER}"
           echo "upstream_tag=$upstream_tag" >> "$GITHUB_OUTPUT"
           echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
@@ -73,13 +104,7 @@ jobs:
           else
             echo "build=true" >> "$GITHUB_OUTPUT"
           fi
-          cat prs.tsv
-
-      - name: Check out this branch
-        if: steps.plan.outputs.build == 'true'
-        uses: actions/checkout@v4
-        with:
-          path: personal
+          cat prs.tsv branches.tsv
 
       - name: Check out upstream release
         if: steps.plan.outputs.build == 'true'
@@ -101,19 +126,76 @@ jobs:
             echo "ZapFast ${{ steps.plan.outputs.upstream_tag }} with these open pull requests from $UPSTREAM:"
             echo
           } > ../notes.md
-          skipped=""
+          merged=" "
+          problems=""
+          # Merges a fetched ref, named in the notes as $2. When only the
+          # website's docs conflict, which the app does not ship, it keeps
+          # the docs merged so far and takes the code.
+          merge_in() {
+            local conflicted
+            if git merge -q --no-edit "$1"; then
+              echo "- $2" >> ../notes.md
+            elif conflicted=$(git diff --name-only --diff-filter=U) &&
+              ! grep -qv '^docs/' <<<"$conflicted"; then
+              git checkout --ours -- $conflicted
+              git add -- $conflicted
+              git commit -q --no-edit
+              echo "- $2, without its conflicting docs" >> ../notes.md
+            else
+              problems="$problems\n- $2 conflicts in: $(tr '\n' ' ' <<<"$conflicted")"
+              git merge --abort || true
+              return 1
+            fi
+          }
           while IFS=$'\t' read -r number sha author title; do
             [ -n "$number" ] || continue
             git fetch -q origin "pull/$number/head:pr-$number"
-            if git merge -q --no-edit "pr-$number"; then
-              echo "- #$number $title (@$author)" >> ../notes.md
-            else
-              git merge --abort
-              skipped="$skipped\n- #$number $title (@$author)"
+            if merge_in "pr-$number" "#$number $title (@$author)"; then
+              merged="$merged$number "
             fi
           done < ../prs.tsv
-          if [ -n "$skipped" ]; then
-            printf '\nLeft out because they conflict with this release:\n%b\n' "$skipped" >> ../notes.md
+          if [ -s ../branches.tsv ]; then
+            printf '\nAnd these branches of %s, not pull requests yet:\n\n' "$GITHUB_REPOSITORY" >> ../notes.md
+          fi
+          while IFS=$'\t' read -r branch sha; do
+            [ -n "$branch" ] || continue
+            git fetch -q "https://github.com/$GITHUB_REPOSITORY.git" "refs/heads/$branch:own/$branch"
+            merge_in "own/$branch" "$branch" || true
+          done < ../branches.tsv
+          # A fix-up makes pull requests that conflict in meaning build
+          # together. It is named after them (fixups/853+889.patch) and applies
+          # once every one of them is in the build.
+          fixed=""
+          for fixup in ../personal/fixups/*.patch; do
+            [ -e "$fixup" ] || continue
+            name=$(basename "$fixup" .patch)
+            missing=""
+            for number in ${name//+/ }; do
+              [[ "$merged" == *" $number "* ]] || missing="$missing #$number"
+            done
+            [ -z "$missing" ] || continue
+            if git apply --index "$fixup"; then
+              git commit -q -m "Make #${name//+/ and #} build together"
+              fixed="$fixed\n- #${name//+/ and #} (fixups/$name.patch)"
+            else
+              problems="$problems\n- fixups/$name.patch no longer applies: #${name//+/ or #} changed"
+            fi
+          done
+          if [ -n "$fixed" ]; then
+            printf '\nMade to build together:\n%b\n' "$fixed" >> ../notes.md
+          fi
+          if [ -s ../gone.md ]; then
+            printf '\nListed, but no longer open:\n' >> ../notes.md
+            cat ../gone.md >> ../notes.md
+          fi
+          if [ -n "$problems" ]; then
+            {
+              echo "## Nothing was built"
+              echo
+              echo "Fix these, or take the pull request out, and run the workflow again:"
+              printf '%b\n' "$problems"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
           cat ../notes.md >> "$GITHUB_STEP_SUMMARY"
 

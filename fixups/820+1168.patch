@@ -1,0 +1,12 @@
+diff --git a/src/ui/conversation.rs b/src/ui/conversation.rs
+index f170365..8090853 100644
+--- a/src/ui/conversation.rs
++++ b/src/ui/conversation.rs
+@@ -12734,6 +12734,7 @@ mod tests {
+         let sticker = Content::Sticker {
+             media: media(Some(512), Some(512)),
+             animated: false,
++            audio: None,
+         };
+         assert_eq!(
+             name(&sticker, "webp"),
