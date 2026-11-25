@@ -56,9 +56,7 @@ impl AppDirs {
             if let Some(old) = Self::of(name) {
                 self.adopt(&old)?;
             }
-            if let (Some(from), Some(to)) =
-                (eframe::storage_dir(name), eframe::storage_dir("zapfast"))
-            {
+            if let (Some(from), Some(to)) = (storage_dir(name), storage_dir("zapfast")) {
                 adopt_directory(&from, &to)?;
             }
         }
@@ -415,6 +413,42 @@ fn runtime_dir(project: &ProjectDirs, state: &Path) -> PathBuf {
     state.with_file_name(name)
 }
 
+/// The folder eframe keeps an app's own state in, where older releases kept
+/// theirs; the same answer as `eframe::storage_dir`, without depending on it.
+fn storage_dir(app_id: &str) -> Option<PathBuf> {
+    if cfg!(windows) {
+        // eframe asks for the roaming AppData folder, which `directories` calls
+        // the data directory on Windows.
+        directories::BaseDirs::new().map(|base| base.data_dir().join(app_id).join("data"))
+    } else if cfg!(target_os = "macos") {
+        std::env::home_dir().map(|home| {
+            home.join("Library")
+                .join("Application Support")
+                .join(app_id.replace(|c: char| c.is_ascii_whitespace(), "-"))
+        })
+    } else if cfg!(any(
+        target_os = "linux",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    )) {
+        std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .or_else(|| std::env::home_dir().map(|home| home.join(".local").join("share")))
+            .map(|path| {
+                path.join(
+                    app_id
+                        .to_lowercase()
+                        .replace(|c: char| c.is_ascii_whitespace(), ""),
+                )
+            })
+    } else {
+        None
+    }
+}
+
 /// Rename whole directories so SQLite databases travel with their WAL files.
 /// A failed move stops startup before empty replacement directories are made.
 fn adopt_directory(from: &Path, to: &Path) -> std::io::Result<()> {
@@ -430,6 +464,30 @@ fn adopt_directory(from: &Path, to: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The folders older releases left their state in are found where eframe
+    /// looked for them, for the names `adopt_previous_names` asks about and for
+    /// ids with capitals and whitespace, which the platforms treat differently.
+    #[cfg(feature = "egui-ui")]
+    #[test]
+    fn the_storage_folder_is_the_one_eframe_names() {
+        for app_id in [
+            "zapfast",
+            "fastsapp",
+            "fastwhatsapp",
+            "ZapFast",
+            "ZapFast Demo",
+            "a b\tc",
+            "",
+        ] {
+            assert_eq!(
+                storage_dir(app_id),
+                eframe::storage_dir(app_id),
+                "{app_id:?}"
+            );
+        }
+        assert!(storage_dir("zapfast").is_some());
+    }
 
     fn root(name: &str) -> PathBuf {
         let root =
