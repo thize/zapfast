@@ -13,8 +13,7 @@ fork, signed with this fork's update key:
 - macOS: universal disk image (Apple silicon and Intel).
 - Windows x64 and arm64: portable zip and Windows Installer package (msi).
 - Linux x64 and arm64: archive, AppImage, deb and rpm; x64 Flatpak bundle.
-- `checksums.txt` and its signature, the packaging recipes
-  (`*-packaging.tar.xz`) and `packaging-checksums.txt`.
+- `checksums.txt` and its signature, and `packaging-checksums.txt`.
 
 Pull requests that conflict are left out and named in the notes. Run it by
 hand from the Actions tab ("Run workflow", optionally forced).
@@ -35,6 +34,9 @@ Differences from upstream's downloads:
   names use `-personal.N`, since a release file name cannot hold a tilde.
 - native-packages takes only `-alpha.N`, `-beta.N` and `-rc.N` prereleases;
   the workflow lets the installed gem take `-personal.N` too.
+- No `*-packaging.tar.xz`: native-packages makes the AUR and Homebrew
+  recipes only for stable versions, and every personal build is a
+  prerelease.
 - Each release also carries a `macos-arm64` copy of the universal disk image:
   builds up to 0.21.3-personal.5 update from that name. It can go once every
   Mac runs a later build.

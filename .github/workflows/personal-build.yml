@@ -405,9 +405,9 @@ jobs:
           path: "*.flatpak"
           if-no-files-found: error
 
-  # deb, rpm and AppImage for both architectures, plus the packaging recipes
-  # and their checksums, made by native-packages as upstream's packaging
-  # workflow makes them, from the files the jobs above built.
+  # deb, rpm and AppImage for both architectures and their checksums, made
+  # by native-packages as upstream's packaging workflow makes them, from the
+  # files the jobs above built.
   linux-packages:
     needs: [plan, linux, macos]
     if: needs.plan.outputs.build == 'true'
@@ -457,8 +457,11 @@ jobs:
         run: |
           set -euo pipefail
           native-packages validate
+          # native-packages makes no downstream recipes (AUR, Homebrew) for a
+          # prerelease, and every personal build is one; upstream makes them
+          # only for its stable releases.
           native-packages build --version "$VERSION" --target linux-amd64 --target linux-arm64 \
-            --output "$RUNNER_TEMP/native-packages"
+            --defer-recipes --output "$RUNNER_TEMP/native-packages"
           mkdir -p ../dist
           find "$RUNNER_TEMP/native-packages" -type f \( -name '*.deb' -o -name '*.rpm' \
             -o -name '*.AppImage' -o -name '*-packaging.tar.xz' -o -name 'packaging-checksums.txt' \) \
