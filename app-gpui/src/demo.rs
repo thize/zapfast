@@ -297,6 +297,25 @@ pub fn unlinked(injector: &Injector) {
     }));
 }
 
+/// The pairing code the demo answers a phone number with.
+pub const PAIR_CODE: &str = "ZAPF7K2Q";
+
+/// The picture file of a contact that has one (ZapFast's public-domain demo
+/// portraits, `assets/demo/avatars`); groups and the others have none.
+pub fn portrait(id: &str) -> Option<std::path::PathBuf> {
+    let file = match id {
+        ANA => "ada.jpg",
+        BRUNO => "astronaut.jpg",
+        CAMILA => "dorothy.jpg",
+        _ => return None,
+    };
+    Some(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../assets/demo/avatars")
+            .join(file),
+    )
+}
+
 /// Stands in for the worker: answers the commands the store sends.
 pub struct Responder {
     injector: Injector,
@@ -459,11 +478,17 @@ impl CommandSink for Responder {
                 emoji,
             } => self.react(&chat, &message, &emoji),
             Command::MarkRead { chat, .. } => self.read(&chat),
-            Command::FetchAvatar { id, full } => self.injector.send(Event::Avatar {
-                id,
-                full,
-                path: None,
-            }),
+            Command::FetchAvatar { id, full } => {
+                let path = portrait(&id);
+                self.injector.send(Event::Avatar { id, full, path });
+            }
+            Command::PairWithPhone(phone) => {
+                self.injector.send(Event::Link(LinkStatus::Unlinked {
+                    qr: None,
+                    pair_code: Some(PAIR_CODE.to_owned()),
+                    pairing_phone: Some(phone),
+                }));
+            }
             // History from the phone, the updater and the rest: nothing to
             // answer in a demo.
             _ => {}

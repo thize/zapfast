@@ -23,7 +23,8 @@ use crate::instance::{self, Launch, Request};
 use crate::palette::Palette;
 use crate::shell::{Shell, apply_theme};
 use crate::state::Store;
-use crate::ui::ActivePalette;
+use crate::ui::{ActiveLocale, ActivePalette};
+use crate::views::conversation::{ClearSelection, CopySelection, MenuKind};
 use crate::{demo, identity};
 
 actions!(zapfast_gpui, [Quit]);
@@ -116,6 +117,13 @@ fn boot(cli: Cli, real: Option<Real>, cx: &mut App) {
     };
     cx.set_global(ActivePalette(palette));
     apply_theme(palette, cx);
+    // Content labels ("Foto", "Mensagem de voz") follow the system's language;
+    // a synthetic run is always in Portuguese, so its pictures do not vary.
+    cx.set_global(ActiveLocale(if cli.synthetic() {
+        zapfast::i18n::Locale::PortugueseBrazil
+    } else {
+        zapfast::i18n::detect()
+    }));
     cx.set_app_identity(&identity::bundle_id(), APP_NAME);
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.bind_keys([KeyBinding::new(
@@ -128,6 +136,19 @@ fn boot(cli: Cli, real: Option<Real>, cx: &mut App) {
         None,
     )]);
     cx.set_menus(menus());
+    cx.bind_keys([
+        // The secondary modifier is Cmd on macOS and Ctrl elsewhere.
+        KeyBinding::new(
+            if cfg!(target_os = "macos") {
+                "cmd-c"
+            } else {
+                "ctrl-c"
+            },
+            CopySelection,
+            Some("Conversation"),
+        ),
+        KeyBinding::new("escape", ClearSelection, Some("Conversation")),
+    ]);
 
     // The state, fed by the backend, or by the demo through the same path.
     let (mut bridge, injector, instance) = match real {
@@ -287,10 +308,16 @@ fn snapshot(
             cx.update(|cx| cx.quit());
             return;
         }
-        for (name, load) in [("login", false), ("chats", true)] {
-            if load {
-                demo::start(&injector);
-            }
+        for name in [
+            "login",
+            "login-phone",
+            "chats",
+            "chat",
+            "chat-selection",
+            "chat-reply",
+            "chat-reactions",
+        ] {
+            cx.update(|cx| snapshot_step(name, window, &injector, cx));
             cx.background_executor()
                 .timer(Duration::from_millis(900))
                 .await;
@@ -329,6 +356,68 @@ fn snapshot(
         cx.update(|cx| cx.quit());
     })
     .detach();
+}
+
+/// Puts the app in the state of the screen `name` (see [`snapshot`]).
+fn snapshot_step(
+    name: &str,
+    window: WindowHandle<gpui_component::Root>,
+    injector: &Injector,
+    cx: &mut App,
+) {
+    use crate::state::PairingMethod;
+    use crate::views::selection::{Pos, Selection};
+    let shell = shell_of(window, cx);
+    let store = shell.read(cx).store().clone();
+    let panel = shell.read(cx).panel().cloned();
+    let conversation = panel.map(|panel| panel.read(cx).conversation().clone());
+    match name {
+        "login-phone" => {
+            store.update(cx, |store, cx| {
+                store.session.update(cx, |session, cx| {
+                    session.method = PairingMethod::PhoneNumber;
+                    cx.notify();
+                });
+                store.pair_with_phone("5511911110001");
+            });
+        }
+        "chats" => demo::start(injector),
+        "chat" => store.update(cx, |store, cx| {
+            store.open_chat(Some(demo::ANA.to_owned()), cx)
+        }),
+        "chat-selection" => {
+            if let Some(view) = conversation {
+                view.update(cx, |view, cx| {
+                    let last = view.message_count().saturating_sub(1);
+                    view.set_selection(
+                        Some(Selection::new(
+                            Pos::new(last - 5, 4),
+                            Pos::new(last - 1, 12),
+                        )),
+                        cx,
+                    );
+                });
+            }
+        }
+        "chat-reply" => {
+            if let Some(view) = conversation {
+                view.update(cx, |view, cx| {
+                    view.set_selection(None, cx);
+                    let last = view.message_count().saturating_sub(2);
+                    view.reply_to(last, cx);
+                });
+            }
+        }
+        "chat-reactions" => {
+            if let Some(view) = conversation {
+                view.update(cx, |view, cx| {
+                    let target = view.message_count().saturating_sub(3);
+                    view.show_menu(target, MenuKind::Reactions, cx);
+                });
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The shell of an open window, for the automated modes and tests.
